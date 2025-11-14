@@ -2,25 +2,42 @@
 
 import type { SessionDataPoint } from '@/lib/types';
 import { useMemo } from 'react';
-import { Pie, PieChart, ResponsiveContainer, Tooltip, Cell } from 'recharts';
+import { Pie, PieChart, Cell } from 'recharts';
 import {
   ChartContainer,
   ChartTooltipContent,
+  ChartLegend,
+  ChartLegendContent,
 } from '@/components/ui/chart';
 
 interface AttentionPieChartProps {
   data: SessionDataPoint[];
 }
 
-const COLORS = {
-  Attentive: 'hsl(var(--chart-1))',
-  Distracted: 'hsl(var(--chart-3))',
-  Multitasking: 'hsl(var(--chart-5))',
-  Idle: 'hsl(var(--muted))'
+const chartConfig = {
+  Attentive: {
+    label: 'Attentive',
+    color: 'hsl(var(--chart-1))',
+  },
+  Distracted: {
+    label: 'Distracted',
+    color: 'hsl(var(--chart-3))',
+  },
+  Multitasking: {
+    label: 'Multitasking',
+    color: 'hsl(var(--chart-5))',
+  },
+  Idle: {
+    label: 'Idle',
+    color: 'hsl(var(--muted))'
+  },
 };
 
 export default function AttentionPieChart({ data }: AttentionPieChartProps) {
   const chartData = useMemo(() => {
+    if (data.length === 0) {
+      return [{ name: 'Idle', value: 1, fill: 'hsl(var(--muted))' }];
+    }
     const stateCounts = data.reduce((acc, curr) => {
       acc[curr.attentionState] = (acc[curr.attentionState] || 0) + 1;
       return acc;
@@ -29,33 +46,32 @@ export default function AttentionPieChart({ data }: AttentionPieChartProps) {
     return Object.entries(stateCounts).map(([name, value]) => ({
       name,
       value,
-      fill: COLORS[name as keyof typeof COLORS] || COLORS.Idle,
+      fill: chartConfig[name as keyof typeof chartConfig]?.color || 'hsl(var(--muted))',
     }));
   }, [data]);
 
   return (
-    <ChartContainer config={{}} className="h-full w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
-          <Tooltip
-            cursor={false}
-            content={<ChartTooltipContent hideLabel indicator="dot" />}
-          />
-          <Pie
-            data={chartData}
-            dataKey="value"
-            nameKey="name"
-            cx="50%"
-            cy="50%"
-            outerRadius={80}
-            strokeWidth={2}
-          >
-            {chartData.map((entry) => (
-              <Cell key={`cell-${entry.name}`} fill={entry.fill} />
-            ))}
-          </Pie>
-        </PieChart>
-      </ResponsiveContainer>
+    <ChartContainer config={chartConfig} className="h-full w-full flex flex-col items-center">
+      <PieChart accessibilityLayer width={200} height={200}>
+        <ChartTooltipContent
+          cursor={false}
+          content={<ChartTooltipContent hideLabel indicator="dot" />}
+        />
+        <Pie
+          data={chartData}
+          dataKey="value"
+          nameKey="name"
+          cx="50%"
+          cy="50%"
+          outerRadius={80}
+          strokeWidth={2}
+        >
+          {chartData.map((entry) => (
+            <Cell key={`cell-${entry.name}`} fill={entry.fill} />
+          ))}
+        </Pie>
+      </PieChart>
+      <ChartLegend content={<ChartLegendContent />} />
     </ChartContainer>
   );
 }
