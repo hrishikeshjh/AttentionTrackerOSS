@@ -1,21 +1,105 @@
-# **App Name**: CognEn: Cognitive Engagement Analyzer
+# CognEn: Cognitive Engagement Analyzer
 
-## Core Features:
+CognEn is a simple, user-friendly web app that helps measure how focused someone is while working or studying. It uses the webcam, basic facial cues, and in-browser activity to understand attention levels in real time.
 
-- User Authentication: Firebase email/password and Google Sign-in to authenticate users and store user info under /users/{uid} in Firestore.
-- Facial Landmark & Attention Tracking: Capture webcam feed, use Mediapipe FaceMesh to extract EAR, MAR, and head pose, feed features into a TensorFlow/Keras CNN classifier (attention_model.h5), and output Attentive, Distracted, or Multitasking states.
-- Attention Score Computation: Based on facial analysis calculate continuous attention score (0-100) influenced by blink rate, head pose and eye aspect ratio.
-- Multitasking Detection: Use JavaScript to detect browser tab inactivity. Log multitasking events if the tab is hidden for more than 3 seconds and reduce the attention score.
-- Data Logging: Log timestamp, attention score, multitask flag, and head pose every 5 seconds to Firestore under /users/{uid}/sessions/{session_id}.
-- Real-time Dashboard Visualization: Display a live line chart of attention score vs time, a pie chart of attention states, and a counter of multitasking events. Show summary card with average attention, multitask events, engagement level, and duration.
-- Session Report Generation: Tool that utilizes the data collected to generate summary report. Export the session summary as a PDF report.
+---
 
-## Style Guidelines:
+## 🚀 What This App Does
 
-- Primary color: Neon cyan (#00FFFF) for a vibrant and engaging feel.
-- Background color: Dark background (#0D1117) to provide contrast and reduce eye strain.
-- Accent color: Green (#00FF99) for highlights and interactive elements.
-- Body and headline font: 'Inter', a grotesque-style sans-serif, which offers a modern and neutral look suitable for both headlines and body text.
-- Use clear, minimalist icons to represent different attention states and actions.
-- Divide the UI into a left panel for live webcam feed and controls, and a right panel for visualizations and session summary.
-- Subtle animations to indicate changes in attention score and multitasking events.
+### **1. Sign Up & Login**
+You can log in using:
+- Email & password  
+- Google Sign-in  
+
+Your information is stored safely in Firestore under your unique user ID.
+
+---
+
+### **2. Tracks Facial Cues to Estimate Attention**
+With your permission, CognEn uses your webcam to look at basic facial movements such as:
+- Eye openness (to see if you're sleepy or blinking too much)  
+- Mouth movement (helps detect yawning)  
+- Head direction (if you’re facing away from the screen)
+
+These signals are fed into a trained model that identifies whether you are:
+- **Attentive**
+- **Distracted**
+- **Multitasking**
+
+---
+
+### **3. Gives You an Attention Score (0–100)**
+The app calculates a score based on your facial cues.  
+Higher score = more focused.  
+Lower score = you’re probably distracted or looking away.
+
+---
+
+### **4. Detects Multitasking**
+If you leave the browser tab or switch to another app, the system marks it as “multitasking” and reduces your score.
+
+---
+
+### **5. Saves Your Activity**
+Every 5 seconds, CognEn stores:
+- The attention score  
+- Whether you multitasked  
+- Your head pose  
+- A timestamp  
+
+This goes into Firestore under your session.
+
+---
+
+### **6. Shows a Live Dashboard**
+You’ll see:
+- A live attention score graph  
+- A pie chart of how much time you spent attentive/distracted  
+- Number of multitasking events  
+- A summary with your overall engagement level  
+
+---
+
+### **7. Create a Session Report**
+After finishing a session, you can export a clean PDF report summarizing:
+- Average attention  
+- Multitasking incidents  
+- Time spent  
+- Overall engagement rating  
+
+---
+
+## 🎨 Design Choices
+
+To make the experience pleasant and easy on the eyes:
+
+- **Primary color:** Neon Cyan (#00FFFF)  
+- **Accent color:** Green (#00FF99)  
+- **Background:** Dark mode (#0D1117)  
+- **Font:** Inter (modern and clean)  
+- **UI Layout:**  
+  - Left side → Webcam preview & controls  
+  - Right side → Charts & session summary  
+- **Smooth animations** to show score changes or multitasking moments  
+
+---
+
+## 📦 Installation & Setup (Simple Steps)
+
+1. Clone the repository  
+2. Install dependencies  
+3. Configure Firebase keys  
+4. Place the attention model file (`attention_model.h5`) in the correct folder  
+5. Run the development server  
+6. Open your browser and start a session  
+
+---
+
+## ❤️ Why We Built This
+CognEn helps students, professionals, and learners understand how engaged they really are.  
+It turns simple facial signals into meaningful insights—without complexity.
+
+---
+
+## 📜 License
+Open-source and free to use.
