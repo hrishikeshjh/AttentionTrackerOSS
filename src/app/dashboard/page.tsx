@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
-import type { SessionDataPoint, SessionSummary, FaceMetrics } from '@/lib/types';
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import type { SessionDataPoint, SessionSummary, ExtendedFaceMetrics, MLPrediction } from '@/lib/types';
 import Header from '@/components/dashboard/header';
 import WebcamPanel from '@/components/dashboard/webcam-panel';
 import VisualsPanel from '@/components/dashboard/visuals-panel';
+import { resetMLEngine } from '@/lib/ml-engine';
+import { resetAnalyticsEngine } from '@/lib/analytics';
 
 export default function DashboardPage() {
   const [sessionActive, setSessionActive] = useState(false);
@@ -12,7 +14,8 @@ export default function DashboardPage() {
   const [multitaskEvents, setMultitaskEvents] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
-  const [currentFaceMetrics, setCurrentFaceMetrics] = useState<FaceMetrics | null>(null);
+  const [currentFaceMetrics, setCurrentFaceMetrics] = useState<ExtendedFaceMetrics | null>(null);
+  const [currentPrediction, setCurrentPrediction] = useState<MLPrediction | null>(null);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -26,17 +29,38 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [sessionActive, startTime]);
 
-  const handleStartSession = () => {
+  const handleStartSession = useCallback(() => {
+    // Reset engines for fresh session
+    resetMLEngine();
+    resetAnalyticsEngine();
+
     setSessionData([]);
     setMultitaskEvents(0);
     setStartTime(Date.now());
     setCurrentFaceMetrics(null);
+    setCurrentPrediction(null);
     setSessionActive(true);
-  };
+  }, []);
 
-  const handleStopSession = () => {
+  const handleStopSession = useCallback(() => {
     setSessionActive(false);
-  };
+  }, []);
+
+  const handleNewDataPoint = useCallback((data: SessionDataPoint) => {
+    setSessionData(prev => [...prev, data]);
+  }, []);
+
+  const handleNewFaceMetrics = useCallback((metrics: ExtendedFaceMetrics | null) => {
+    setCurrentFaceMetrics(metrics);
+  }, []);
+
+  const handleNewPrediction = useCallback((prediction: MLPrediction | null) => {
+    setCurrentPrediction(prediction);
+  }, []);
+
+  const handleMultitask = useCallback(() => {
+    setMultitaskEvents(prev => prev + 1);
+  }, []);
 
   const currentScore = useMemo(() => {
     if (sessionData.length === 0) return 0;
@@ -46,7 +70,7 @@ export default function DashboardPage() {
   const summary: SessionSummary = useMemo(() => {
     const totalPoints = sessionData.length;
     const avg = totalPoints === 0 ? 0 : Math.round(sessionData.reduce((sum, d) => sum + d.attentionScore, 0) / totalPoints);
-    
+
     let engagementLevel: 'High' | 'Moderate' | 'Low';
     if (avg >= 75) engagementLevel = 'High';
     else if (avg >= 50) engagementLevel = 'Moderate';
@@ -70,18 +94,20 @@ export default function DashboardPage() {
               sessionActive={sessionActive}
               onStartSession={handleStartSession}
               onStopSession={handleStopSession}
-              onNewDataPoint={(data) => setSessionData(prev => [...prev, data])}
-              onNewFaceMetrics={setCurrentFaceMetrics}
-              onMultitask={() => setMultitaskEvents(prev => prev + 1)}
+              onNewDataPoint={handleNewDataPoint}
+              onNewFaceMetrics={handleNewFaceMetrics}
+              onNewPrediction={handleNewPrediction}
+              onMultitask={handleMultitask}
             />
           </div>
           <div className="lg:col-span-3">
-            <VisualsPanel 
+            <VisualsPanel
               sessionData={sessionData}
               summary={summary}
               currentScore={currentScore}
               sessionActive={sessionActive}
               faceMetrics={currentFaceMetrics}
+              prediction={currentPrediction}
             />
           </div>
         </div>
