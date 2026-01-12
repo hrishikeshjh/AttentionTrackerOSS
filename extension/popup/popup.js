@@ -1,6 +1,6 @@
 /**
  * CognEn Extension Popup Script
- * Uses offscreen document for camera access
+ * Uses chrome.storage to read detection results from offscreen document
  */
 
 // DOM Elements
@@ -31,26 +31,68 @@ let isSessionActive = false;
 let sessionStartTime = null;
 let sessionTimerInterval = null;
 let sessionScores = [];
+let pollInterval = null;
 
-// Hide loading overlay immediately (models load in offscreen document)
+// Hide loading overlay
 loadingOverlay.classList.add('hidden');
 
 // Initialize
 async function init() {
-    // Check current state from background
-    chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
-        if (response) {
-            if (response.sessionActive) {
-                // Restore session state
-                isSessionActive = true;
-                updateSessionUI(true);
-            }
-            if (response.offscreenDocumentCreated) {
-                isCameraOn = true;
-                updateCameraUI(true);
+    // Check current state from storage
+    const state = await chrome.storage.local.get(['cameraRunning', 'sessionActive', 'sessionStartTime']);
+
+    if (state.cameraRunning) {
+        isCameraOn = true;
+        updateCameraUI(true);
+        startPolling();
+    }
+
+    if (state.sessionActive) {
+        isSessionActive = true;
+        sessionStartTime = state.sessionStartTime || Date.now();
+        updateSessionUI(true);
+        sessionTimerInterval = setInterval(updateSessionTimer, 1000);
+    }
+}
+
+// Poll for detection results
+function startPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+
+    pollInterval = setInterval(async () => {
+        const data = await chrome.storage.local.get(['lastDetection']);
+
+        if (data.lastDetection) {
+            const detection = data.lastDetection;
+            const age = Date.now() - detection.timestamp;
+
+            // Only use recent detections (less than 2 seconds old)
+            if (age < 2000) {
+                if (detection.hasFace && detection.prediction) {
+                    updateUI(detection.prediction, detection.metrics);
+
+                    if (isSessionActive) {
+                        sessionScores.push(detection.prediction.rawScore);
+
+                        // Update badge
+                        chrome.runtime.sendMessage({
+                            type: 'UPDATE_SCORE',
+                            data: { score: detection.prediction.rawScore }
+                        });
+                    }
+                } else {
+                    updateUINoFace();
+                }
             }
         }
-    });
+    }, 200); // Poll every 200ms
+}
+
+function stopPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
 }
 
 // Camera Controls
@@ -58,27 +100,38 @@ async function startCamera() {
     cameraButtonText.textContent = 'Starting...';
     toggleCameraBtn.disabled = true;
 
-    chrome.runtime.sendMessage({ type: 'START_CAMERA_REQUEST' }, (response) => {
+    try {
+        // Create offscreen document and start camera
+        const response = await chrome.runtime.sendMessage({ type: 'START_CAMERA_REQUEST' });
+
         if (response && response.success) {
+            // Wait for camera to start
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
             isCameraOn = true;
             updateCameraUI(true);
+            startPolling();
         } else {
-            alert('Failed to start camera: ' + (response?.error || 'Unknown error'));
-            cameraButtonText.textContent = 'Start Camera';
-            toggleCameraBtn.disabled = false;
+            throw new Error(response?.error || 'Failed to start camera');
         }
-    });
+    } catch (error) {
+        console.error('Camera start error:', error);
+        alert('Failed to start camera: ' + error.message);
+        cameraButtonText.textContent = 'Start Camera';
+        toggleCameraBtn.disabled = false;
+    }
 }
 
 function stopCamera() {
-    chrome.runtime.sendMessage({ type: 'STOP_CAMERA_REQUEST' }, (response) => {
-        isCameraOn = false;
-        updateCameraUI(false);
+    chrome.runtime.sendMessage({ type: 'STOP_CAMERA_REQUEST' });
 
-        if (isSessionActive) {
-            stopSession();
-        }
-    });
+    isCameraOn = false;
+    updateCameraUI(false);
+    stopPolling();
+
+    if (isSessionActive) {
+        stopSession();
+    }
 }
 
 function updateCameraUI(isOn) {
@@ -113,6 +166,12 @@ function updateCameraUI(isOn) {
 
         statusDot.classList.remove('active', 'recording');
         statusText.textContent = 'Inactive';
+
+        // Reset display
+        scoreNumber.textContent = '0';
+        scoreProgress.style.strokeDashoffset = 283;
+        scoreState.textContent = '-';
+        scoreState.className = 'score-state';
     }
 }
 
@@ -130,15 +189,13 @@ function startSession() {
     sessionStartTime = Date.now();
     sessionScores = [];
 
-    // Reset ML in offscreen document
+    // Reset ML
     chrome.runtime.sendMessage({ type: 'RESET_ML' });
 
     updateSessionUI(true);
 
-    // Start session timer
     sessionTimerInterval = setInterval(updateSessionTimer, 1000);
 
-    // Notify background
     chrome.runtime.sendMessage({ type: 'SESSION_START' });
     chrome.storage.local.set({ sessionActive: true, sessionStartTime });
 }
@@ -204,21 +261,6 @@ function updateSessionTimer() {
     sessionTimeEl.textContent = `${minutes}:${seconds}`;
 }
 
-// Listen for detection results from offscreen document
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'DETECTION_RESULT') {
-        if (message.data && !message.data.noFace) {
-            updateUI(message.data.prediction, message.data.metrics);
-
-            if (isSessionActive && message.data.prediction) {
-                sessionScores.push(message.data.prediction.rawScore);
-            }
-        } else {
-            updateUINoFace();
-        }
-    }
-});
-
 // UI Updates
 function updateUI(prediction, metrics) {
     if (!prediction) return;
@@ -271,22 +313,79 @@ function updateUINoFace() {
     scoreState.className = 'score-state';
 }
 
+// Settings modal
+function showSettings() {
+    chrome.storage.local.get(['settings'], (result) => {
+        const settings = result.settings || {
+            notificationsEnabled: true,
+            lowAttentionThreshold: 40,
+            breakReminderMinutes: 45,
+            soundEnabled: false
+        };
+
+        const modal = document.createElement('div');
+        modal.className = 'settings-modal';
+        modal.innerHTML = `
+      <div class="settings-content">
+        <div class="settings-header">
+          <h3>Settings</h3>
+          <button class="settings-close" id="closeSettings">&times;</button>
+        </div>
+        <div class="settings-body">
+          <label class="setting-item">
+            <span>Notifications</span>
+            <input type="checkbox" id="notificationsEnabled" ${settings.notificationsEnabled ? 'checked' : ''}>
+          </label>
+          <label class="setting-item">
+            <span>Sound Alerts</span>
+            <input type="checkbox" id="soundEnabled" ${settings.soundEnabled ? 'checked' : ''}>
+          </label>
+          <label class="setting-item">
+            <span>Low Attention Threshold</span>
+            <input type="number" id="lowAttentionThreshold" value="${settings.lowAttentionThreshold}" min="20" max="60" style="width: 60px;">
+          </label>
+          <label class="setting-item">
+            <span>Break Reminder (min)</span>
+            <input type="number" id="breakReminderMinutes" value="${settings.breakReminderMinutes}" min="15" max="120" style="width: 60px;">
+          </label>
+        </div>
+        <div class="settings-footer">
+          <button class="btn btn-primary" id="saveSettings">Save</button>
+        </div>
+      </div>
+    `;
+
+        document.body.appendChild(modal);
+
+        document.getElementById('closeSettings').addEventListener('click', () => modal.remove());
+        document.getElementById('saveSettings').addEventListener('click', () => {
+            const newSettings = {
+                notificationsEnabled: document.getElementById('notificationsEnabled').checked,
+                soundEnabled: document.getElementById('soundEnabled').checked,
+                lowAttentionThreshold: parseInt(document.getElementById('lowAttentionThreshold').value),
+                breakReminderMinutes: parseInt(document.getElementById('breakReminderMinutes').value)
+            };
+            chrome.storage.local.set({ settings: newSettings });
+            modal.remove();
+        });
+    });
+}
+
 // Event Listeners
 toggleCameraBtn.addEventListener('click', toggleCamera);
 toggleSessionBtn.addEventListener('click', toggleSession);
+settingsBtn.addEventListener('click', showSettings);
 
-settingsBtn.addEventListener('click', () => {
-    alert('Settings coming soon!');
-});
+if (retryBtn) {
+    retryBtn.addEventListener('click', () => {
+        errorOverlay.classList.add('hidden');
+        init();
+    });
+}
 
-retryBtn.addEventListener('click', () => {
-    errorOverlay.classList.add('hidden');
-    init();
-});
-
-// Handle popup close
+// Cleanup on popup close
 window.addEventListener('beforeunload', () => {
-    // Session continues in background
+    stopPolling();
 });
 
 // Initialize on load

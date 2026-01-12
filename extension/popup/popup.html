@@ -26,8 +26,8 @@
 
     <!-- Webcam Preview -->
     <div class="webcam-container">
-      <video id="webcam" autoplay playsinline muted></video>
-      <canvas id="overlay"></canvas>
+      <video id="webcam" autoplay playsinline muted style="display:none;"></video>
+      <canvas id="overlay" style="display:none;"></canvas>
       <div class="webcam-placeholder" id="webcamPlaceholder">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
@@ -92,7 +92,7 @@
       </button>
     </div>
 
-    <!-- Settings Link -->
+    <!-- Footer -->
     <div class="footer">
       <button class="link-btn" id="settingsBtn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -101,30 +101,23 @@
         </svg>
         Settings
       </button>
-      <a class="link-btn" href="https://cognen.app" target="_blank" id="dashboardLink">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        Full Dashboard
-      </a>
+      <span class="version-text">v1.0.0</span>
     </div>
 
     <!-- Loading Overlay -->
-    <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-overlay hidden" id="loadingOverlay">
       <div class="spinner"></div>
-      <p>Loading models...</p>
+      <p>Loading...</p>
     </div>
 
     <!-- Error Overlay -->
     <div class="loading-overlay hidden" id="errorOverlay">
-      <p class="error-text">Failed to load models</p>
+      <p class="error-text">Failed to load</p>
       <button class="btn btn-secondary" id="retryBtn">Retry</button>
     </div>
   </div>
 
-  <!-- Local scripts (no CDN to avoid CSP issues) -->
-  <script src="../lib/face-api.min.js"></script>
-  <script src="../lib/ml-core.js"></script>
+  <!-- Local scripts -->
   <script src="popup.js"></script>
 </body>
 </html>
