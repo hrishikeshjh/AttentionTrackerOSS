@@ -1,11 +1,9 @@
 /**
  * CognEn Extension Popup Script
- * Handles webcam, face detection, and attention tracking in the popup
+ * Uses offscreen document for camera access
  */
 
 // DOM Elements
-const webcam = document.getElementById('webcam');
-const overlay = document.getElementById('overlay');
 const webcamPlaceholder = document.getElementById('webcamPlaceholder');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const errorOverlay = document.getElementById('errorOverlay');
@@ -30,112 +28,91 @@ const settingsBtn = document.getElementById('settingsBtn');
 // State
 let isCameraOn = false;
 let isSessionActive = false;
-let modelsLoaded = false;
-let animationFrameId = null;
 let sessionStartTime = null;
 let sessionTimerInterval = null;
 let sessionScores = [];
-let metricsAggregator = null;
-let mlEngine = null;
 
-// Model URL - using local bundled file
-const MODEL_URL = chrome.runtime.getURL('models/');
+// Hide loading overlay immediately (models load in offscreen document)
+loadingOverlay.classList.add('hidden');
 
 // Initialize
 async function init() {
-    try {
-        // Check if faceapi is available
-        if (typeof faceapi === 'undefined') {
-            throw new Error('face-api.js not loaded');
-        }
-
-        // Load face-api models from jsdelivr (models only, not scripts)
-        const modelBaseUrl = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
-
-        await Promise.all([
-            faceapi.nets.tinyFaceDetector.loadFromUri(modelBaseUrl),
-            faceapi.nets.faceLandmark68Net.loadFromUri(modelBaseUrl),
-        ]);
-
-        modelsLoaded = true;
-        loadingOverlay.classList.add('hidden');
-
-        // Initialize ML components from ml-core.js
-        if (typeof FaceMetricsAggregator !== 'undefined') {
-            metricsAggregator = new FaceMetricsAggregator();
-        }
-        if (typeof MLEngine !== 'undefined') {
-            mlEngine = new MLEngine();
-        }
-
-        // Check if we have a saved session
-        chrome.storage.local.get(['sessionActive', 'sessionData'], (result) => {
-            if (result.sessionActive) {
-                console.log('Resuming previous session');
+    // Check current state from background
+    chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
+        if (response) {
+            if (response.sessionActive) {
+                // Restore session state
+                isSessionActive = true;
+                updateSessionUI(true);
             }
-        });
-    } catch (error) {
-        console.error('Failed to load models:', error);
-        loadingOverlay.classList.add('hidden');
-        errorOverlay.classList.remove('hidden');
-    }
+            if (response.offscreenDocumentCreated) {
+                isCameraOn = true;
+                updateCameraUI(true);
+            }
+        }
+    });
 }
 
 // Camera Controls
 async function startCamera() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 640, height: 480 }
-        });
-        webcam.srcObject = stream;
-        await webcam.play();
+    cameraButtonText.textContent = 'Starting...';
+    toggleCameraBtn.disabled = true;
 
-        isCameraOn = true;
-        webcamPlaceholder.classList.add('hidden');
+    chrome.runtime.sendMessage({ type: 'START_CAMERA_REQUEST' }, (response) => {
+        if (response && response.success) {
+            isCameraOn = true;
+            updateCameraUI(true);
+        } else {
+            alert('Failed to start camera: ' + (response?.error || 'Unknown error'));
+            cameraButtonText.textContent = 'Start Camera';
+            toggleCameraBtn.disabled = false;
+        }
+    });
+}
+
+function stopCamera() {
+    chrome.runtime.sendMessage({ type: 'STOP_CAMERA_REQUEST' }, (response) => {
+        isCameraOn = false;
+        updateCameraUI(false);
+
+        if (isSessionActive) {
+            stopSession();
+        }
+    });
+}
+
+function updateCameraUI(isOn) {
+    if (isOn) {
+        webcamPlaceholder.innerHTML = `
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="color: #3FB950;">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+        <path d="M8 12l3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <p style="color: #3FB950;">Camera Active</p>
+      <p style="font-size: 10px; color: #8B949E;">Processing in background</p>
+    `;
         cameraButtonText.textContent = 'Stop Camera';
         toggleCameraBtn.classList.add('active');
+        toggleCameraBtn.disabled = false;
         toggleSessionBtn.disabled = false;
 
         statusDot.classList.add('active');
         statusText.textContent = 'Camera On';
+    } else {
+        webcamPlaceholder.innerHTML = `
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
+        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+      </svg>
+      <p>Camera Off</p>
+    `;
+        cameraButtonText.textContent = 'Start Camera';
+        toggleCameraBtn.classList.remove('active');
+        toggleCameraBtn.disabled = false;
+        toggleSessionBtn.disabled = true;
 
-        // Start detection loop
-        runDetection();
-    } catch (error) {
-        console.error('Camera error:', error);
-        alert('Could not access camera. Please check permissions.');
-    }
-}
-
-function stopCamera() {
-    if (webcam.srcObject) {
-        webcam.srcObject.getTracks().forEach(track => track.stop());
-        webcam.srcObject = null;
-    }
-
-    if (animationFrameId) {
-        cancelAnimationFrame(animationFrameId);
-        animationFrameId = null;
-    }
-
-    isCameraOn = false;
-    webcamPlaceholder.classList.remove('hidden');
-    cameraButtonText.textContent = 'Start Camera';
-    toggleCameraBtn.classList.remove('active');
-    toggleSessionBtn.disabled = true;
-
-    statusDot.classList.remove('active', 'recording');
-    statusText.textContent = 'Inactive';
-
-    // Clear overlay
-    const ctx = overlay.getContext('2d');
-    if (ctx) {
-        ctx.clearRect(0, 0, overlay.width, overlay.height);
-    }
-
-    // Stop session if active
-    if (isSessionActive) {
-        stopSession();
+        statusDot.classList.remove('active', 'recording');
+        statusText.textContent = 'Inactive';
     }
 }
 
@@ -153,55 +130,34 @@ function startSession() {
     sessionStartTime = Date.now();
     sessionScores = [];
 
-    // Reset ML components
-    if (metricsAggregator) {
-        metricsAggregator.reset();
-    }
-    if (mlEngine) {
-        mlEngine.reset();
-    }
+    // Reset ML in offscreen document
+    chrome.runtime.sendMessage({ type: 'RESET_ML' });
 
-    // Update UI
-    playIcon.style.display = 'none';
-    stopIcon.style.display = 'block';
-    sessionButtonText.textContent = 'Stop Session';
-    toggleSessionBtn.classList.add('recording');
-    statusDot.classList.add('recording');
-    statusText.textContent = 'Recording';
+    updateSessionUI(true);
 
     // Start session timer
     sessionTimerInterval = setInterval(updateSessionTimer, 1000);
 
-    // Save state
-    chrome.storage.local.set({ sessionActive: true, sessionStartTime });
-
     // Notify background
     chrome.runtime.sendMessage({ type: 'SESSION_START' });
+    chrome.storage.local.set({ sessionActive: true, sessionStartTime });
 }
 
 function stopSession() {
     isSessionActive = false;
 
-    // Update UI
-    playIcon.style.display = 'block';
-    stopIcon.style.display = 'none';
-    sessionButtonText.textContent = 'Start Session';
-    toggleSessionBtn.classList.remove('recording');
-    statusDot.classList.remove('recording');
-    statusText.textContent = isCameraOn ? 'Camera On' : 'Inactive';
+    updateSessionUI(false);
 
-    // Stop timer
     if (sessionTimerInterval) {
         clearInterval(sessionTimerInterval);
         sessionTimerInterval = null;
     }
 
-    // Calculate final stats
     const avgScore = sessionScores.length > 0
         ? Math.round(sessionScores.reduce((a, b) => a + b, 0) / sessionScores.length)
         : 0;
 
-    // Save session data
+    chrome.runtime.sendMessage({ type: 'SESSION_END', data: { avgScore } });
     chrome.storage.local.set({
         sessionActive: false,
         lastSession: {
@@ -211,9 +167,24 @@ function stopSession() {
             avgScore
         }
     });
+}
 
-    // Notify background
-    chrome.runtime.sendMessage({ type: 'SESSION_END', data: { avgScore } });
+function updateSessionUI(isActive) {
+    if (isActive) {
+        playIcon.style.display = 'none';
+        stopIcon.style.display = 'block';
+        sessionButtonText.textContent = 'Stop Session';
+        toggleSessionBtn.classList.add('recording');
+        statusDot.classList.add('recording');
+        statusText.textContent = 'Recording';
+    } else {
+        playIcon.style.display = 'block';
+        stopIcon.style.display = 'none';
+        sessionButtonText.textContent = 'Start Session';
+        toggleSessionBtn.classList.remove('recording');
+        statusDot.classList.remove('recording');
+        statusText.textContent = isCameraOn ? 'Camera On' : 'Inactive';
+    }
 }
 
 function toggleSession() {
@@ -233,95 +204,31 @@ function updateSessionTimer() {
     sessionTimeEl.textContent = `${minutes}:${seconds}`;
 }
 
-// Detection Loop
-async function runDetection() {
-    if (!isCameraOn || !modelsLoaded) {
-        animationFrameId = requestAnimationFrame(runDetection);
-        return;
-    }
+// Listen for detection results from offscreen document
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'DETECTION_RESULT') {
+        if (message.data && !message.data.noFace) {
+            updateUI(message.data.prediction, message.data.metrics);
 
-    if (webcam.readyState < 3) {
-        animationFrameId = requestAnimationFrame(runDetection);
-        return;
-    }
-
-    // Set canvas size
-    overlay.width = webcam.videoWidth;
-    overlay.height = webcam.videoHeight;
-
-    try {
-        const detections = await faceapi
-            .detectAllFaces(webcam, new faceapi.TinyFaceDetectorOptions())
-            .withFaceLandmarks();
-
-        const ctx = overlay.getContext('2d');
-        ctx.clearRect(0, 0, overlay.width, overlay.height);
-
-        if (detections && detections.length > 0) {
-            // Draw landmarks
-            faceapi.draw.drawFaceLandmarks(overlay, detections);
-
-            const landmarks = detections[0].landmarks.positions;
-            const timestamp = Date.now();
-
-            // Calculate metrics
-            let prediction = null;
-            let extendedMetrics = null;
-
-            if (metricsAggregator && mlEngine) {
-                extendedMetrics = metricsAggregator.calculateExtendedMetrics(
-                    landmarks,
-                    webcam.videoWidth,
-                    webcam.videoHeight,
-                    timestamp
-                );
-
-                prediction = mlEngine.predict(extendedMetrics);
-
-                // Update UI with metrics
-                updateUI(prediction, extendedMetrics);
-
-                // Record data if session is active
-                if (isSessionActive) {
-                    sessionScores.push(prediction.rawScore);
-
-                    // Update badge
-                    chrome.runtime.sendMessage({
-                        type: 'UPDATE_SCORE',
-                        data: { score: prediction.rawScore }
-                    });
-                }
-            } else {
-                // Fallback: use basic calculation
-                const score = calculateBasicScore(landmarks);
-                updateUIBasic(score);
-
-                if (isSessionActive) {
-                    sessionScores.push(score);
-                }
+            if (isSessionActive && message.data.prediction) {
+                sessionScores.push(message.data.prediction.rawScore);
             }
         } else {
-            // No face detected
             updateUINoFace();
         }
-    } catch (error) {
-        console.error('Detection error:', error);
     }
-
-    animationFrameId = requestAnimationFrame(runDetection);
-}
+});
 
 // UI Updates
 function updateUI(prediction, metrics) {
-    // Update score
+    if (!prediction) return;
+
     const score = prediction.rawScore;
     scoreNumber.textContent = score;
 
-    // Update ring progress (circumference is ~283)
     const offset = 283 - (283 * score / 100);
     scoreProgress.style.strokeDashoffset = offset;
 
-    // Update ring color
     scoreProgress.classList.remove('good', 'warning', 'danger');
     if (score >= 70) {
         scoreProgress.classList.add('good');
@@ -331,57 +238,28 @@ function updateUI(prediction, metrics) {
         scoreProgress.classList.add('danger');
     }
 
-    // Update state
     scoreState.textContent = prediction.attentionState;
     scoreState.className = 'score-state ' + prediction.attentionState.toLowerCase();
 
-    // Update stats
     if (sessionScores.length > 0) {
         const avg = Math.round(sessionScores.reduce((a, b) => a + b, 0) / sessionScores.length);
         avgScoreEl.textContent = avg + '%';
     }
 
     if (metrics) {
-        blinkRateEl.textContent = metrics.blinkRate.toFixed(1);
+        blinkRateEl.textContent = (metrics.blinkRate || 0).toFixed(1);
 
-        // Fatigue level
-        if (metrics.fatigueIndex < 30) {
+        const fatigue = metrics.fatigueIndex || 0;
+        if (fatigue < 30) {
             fatigueLevelEl.textContent = 'Low';
             fatigueLevelEl.style.color = '#3FB950';
-        } else if (metrics.fatigueIndex < 60) {
+        } else if (fatigue < 60) {
             fatigueLevelEl.textContent = 'Med';
             fatigueLevelEl.style.color = '#FFA657';
         } else {
             fatigueLevelEl.textContent = 'High';
             fatigueLevelEl.style.color = '#F85149';
         }
-    }
-}
-
-function updateUIBasic(score) {
-    scoreNumber.textContent = score;
-
-    const offset = 283 - (283 * score / 100);
-    scoreProgress.style.strokeDashoffset = offset;
-
-    scoreProgress.classList.remove('good', 'warning', 'danger');
-    if (score >= 70) {
-        scoreProgress.classList.add('good');
-        scoreState.textContent = 'Attentive';
-        scoreState.className = 'score-state attentive';
-    } else if (score >= 40) {
-        scoreProgress.classList.add('warning');
-        scoreState.textContent = 'Distracted';
-        scoreState.className = 'score-state distracted';
-    } else {
-        scoreProgress.classList.add('danger');
-        scoreState.textContent = 'Multitasking';
-        scoreState.className = 'score-state multitasking';
-    }
-
-    if (sessionScores.length > 0) {
-        const avg = Math.round(sessionScores.reduce((a, b) => a + b, 0) / sessionScores.length);
-        avgScoreEl.textContent = avg + '%';
     }
 }
 
@@ -393,51 +271,22 @@ function updateUINoFace() {
     scoreState.className = 'score-state';
 }
 
-// Basic score calculation fallback
-function calculateBasicScore(landmarks) {
-    // Simple EAR-based attention score
-    const leftEye = [36, 37, 38, 39, 40, 41].map(i => landmarks[i]);
-    const rightEye = [42, 43, 44, 45, 46, 47].map(i => landmarks[i]);
-
-    const calcEAR = (eye) => {
-        const vertDist = (
-            Math.sqrt((eye[1].x - eye[5].x) ** 2 + (eye[1].y - eye[5].y) ** 2) +
-            Math.sqrt((eye[2].x - eye[4].x) ** 2 + (eye[2].y - eye[4].y) ** 2)
-        );
-        const horzDist = Math.sqrt((eye[0].x - eye[3].x) ** 2 + (eye[0].y - eye[3].y) ** 2);
-        return vertDist / (2 * horzDist);
-    };
-
-    const leftEAR = calcEAR(leftEye);
-    const rightEAR = calcEAR(rightEye);
-    const avgEAR = (leftEAR + rightEAR) / 2;
-
-    // Map EAR to score (0.2-0.4 is typical range)
-    const score = Math.min(100, Math.max(0, (avgEAR - 0.15) / 0.25 * 100));
-    return Math.round(score);
-}
-
 // Event Listeners
 toggleCameraBtn.addEventListener('click', toggleCamera);
 toggleSessionBtn.addEventListener('click', toggleSession);
 
 settingsBtn.addEventListener('click', () => {
-    // Open options page or show settings modal
     alert('Settings coming soon!');
 });
 
 retryBtn.addEventListener('click', () => {
     errorOverlay.classList.add('hidden');
-    loadingOverlay.classList.remove('hidden');
     init();
 });
 
-// Handle popup close - keep session running in background
+// Handle popup close
 window.addEventListener('beforeunload', () => {
-    if (isSessionActive) {
-        // Session continues in background
-        chrome.runtime.sendMessage({ type: 'POPUP_CLOSED', sessionActive: true });
-    }
+    // Session continues in background
 });
 
 // Initialize on load

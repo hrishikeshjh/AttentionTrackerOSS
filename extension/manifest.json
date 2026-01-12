@@ -7,7 +7,8 @@
     "storage",
     "alarms",
     "activeTab",
-    "notifications"
+    "notifications",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -39,7 +40,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["lib/*", "icons/*"],
+      "resources": ["lib/*", "icons/*", "offscreen.html"],
       "matches": ["<all_urls>"]
     }
   ],
