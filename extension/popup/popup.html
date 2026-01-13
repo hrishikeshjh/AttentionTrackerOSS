@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CognEn - Attention Tracker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+          <circle cx="12" cy="12" r="3" fill="currentColor"/>
+          <path d="M12 2V6M12 18V22M2 12H6M18 12H22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span>CognEn</span>
+      </div>
+      <div class="status-indicator" id="statusIndicator">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Ready</span>
+      </div>
+    </header>
+
+    <!-- Status Display -->
+    <div class="webcam-container" id="statusContainer">
+      <div class="webcam-placeholder" id="statusPlaceholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+          <circle cx="12" cy="12" r="3" fill="currentColor"/>
+          <path d="M12 2V6M12 18V22M2 12H6M18 12H22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <p>Click Start Session to begin tracking</p>
+      </div>
+    </div>
+
+    <!-- Score Display -->
+    <div class="score-section">
+      <div class="score-ring" id="scoreRing">
+        <svg viewBox="0 0 100 100">
+          <circle class="score-bg" cx="50" cy="50" r="45"/>
+          <circle class="score-progress" id="scoreProgress" cx="50" cy="50" r="45"/>
+        </svg>
+        <div class="score-value">
+          <span id="scoreNumber">0</span>
+          <span class="score-label">Attention</span>
+        </div>
+      </div>
+      <div class="score-state" id="scoreState">Ready</div>
+    </div>
+
+    <!-- Live Chart -->
+    <div class="chart-container" id="chartContainer" style="display: none;">
+      <div class="chart-label">Attention Over Time</div>
+      <canvas id="liveChart" width="300" height="60"></canvas>
+    </div>
+
+    <!-- Quick Stats -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value" id="sessionTime">00:00</div>
+        <div class="stat-label">Session</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="avgScore">-</div>
+        <div class="stat-label">Average</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="blinkRate">-</div>
+        <div class="stat-label">Blinks/m</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="fatigueLevel">-</div>
+        <div class="stat-label">Fatigue</div>
+      </div>
+    </div>
+
+    <!-- Single Control Button -->
+    <div class="controls">
+      <button class="btn btn-primary btn-large" id="toggleSessionBtn">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" id="playIcon">
+          <polygon points="5,3 19,12 5,21" fill="currentColor"/>
+        </svg>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" id="stopIcon" style="display: none;">
+          <rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/>
+        </svg>
+        <span id="sessionButtonText">Start Session</span>
+      </button>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <button class="link-btn" id="settingsBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        Settings
+      </button>
+      <span class="version-text">v1.1.0</span>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay hidden" id="loadingOverlay">
+      <div class="spinner"></div>
+      <p id="loadingText">Initializing...</p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

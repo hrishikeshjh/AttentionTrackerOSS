@@ -5,17 +5,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Loader2, Play, StopCircle, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import type { SessionDataPoint, FaceMetrics } from '@/lib/types';
+import type { SessionDataPoint, ExtendedFaceMetrics, MLPrediction } from '@/lib/types';
 import * as faceapi from 'face-api.js';
-import { analyzeFacialFeatures } from '@/ai/flows/analyze-facial-features';
-import { calculateEAR, calculateMAR, calculateHeadPose } from '@/lib/face-geometry';
+import { FaceMetricsAggregator } from '@/lib/face-geometry';
+import { getMLEngine, resetMLEngine } from '@/lib/ml-engine';
 
 interface WebcamPanelProps {
   sessionActive: boolean;
   onStartSession: () => void;
   onStopSession: () => void;
   onNewDataPoint: (data: SessionDataPoint) => void;
-  onNewFaceMetrics: (metrics: FaceMetrics | null) => void;
+  onNewFaceMetrics: (metrics: ExtendedFaceMetrics | null) => void;
+  onNewPrediction: (prediction: MLPrediction | null) => void;
   onMultitask: () => void;
 }
 
@@ -25,6 +26,7 @@ export default function WebcamPanel({
   onStopSession,
   onNewDataPoint,
   onNewFaceMetrics,
+  onNewPrediction,
   onMultitask,
 }: WebcamPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -32,8 +34,11 @@ export default function WebcamPanel({
   const { toast } = useToast();
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [isWebcamOn, setIsWebcamOn] = useState(false);
-  
+
   const animationFrameRef = useRef<number | null>(null);
+  const metricsAggregatorRef = useRef<FaceMetricsAggregator>(new FaceMetricsAggregator());
+  const lastDataPointTime = useRef<number>(0);
+  const DATA_POINT_INTERVAL = 1000; // Record data point every 1 second
 
   // Load face-api.js models
   useEffect(() => {
@@ -60,7 +65,7 @@ export default function WebcamPanel({
     };
     loadModels();
   }, [toast]);
-  
+
   // Handle tab visibility for multitasking detection
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -75,7 +80,7 @@ export default function WebcamPanel({
   }, [sessionActive, onMultitask]);
 
   const stopAnalysis = useCallback(() => {
-    if(animationFrameRef.current) {
+    if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
@@ -84,7 +89,7 @@ export default function WebcamPanel({
       ctx?.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     }
   }, []);
-  
+
   const stopWebcam = useCallback(() => {
     stopAnalysis();
     if (videoRef.current && videoRef.current.srcObject) {
@@ -97,8 +102,8 @@ export default function WebcamPanel({
 
   const startWebcam = useCallback(async () => {
     if (!modelsLoaded) {
-      toast({ 
-        title: 'Models not ready', 
+      toast({
+        title: 'Models not ready',
         description: 'Please wait for the models to finish loading.',
         variant: 'default',
       });
@@ -121,7 +126,7 @@ export default function WebcamPanel({
       });
     }
   }, [toast, modelsLoaded]);
-  
+
   const runAnalysis = useCallback(async () => {
     if (!modelsLoaded || !isWebcamOn || !videoRef.current || videoRef.current.readyState < 3) {
       animationFrameRef.current = requestAnimationFrame(runAnalysis);
@@ -129,13 +134,14 @@ export default function WebcamPanel({
     }
 
     if (!canvasRef.current || !videoRef.current) return;
-    
-    canvasRef.current.width = videoRef.current.videoWidth;
-    canvasRef.current.height = videoRef.current.videoHeight;
-    const displaySize = { width: videoRef.current.videoWidth, height: videoRef.current.videoHeight };
+
+    const video = videoRef.current;
+    canvasRef.current.width = video.videoWidth;
+    canvasRef.current.height = video.videoHeight;
+    const displaySize = { width: video.videoWidth, height: video.videoHeight };
 
     try {
-      const detections = await faceapi.detectAllFaces(videoRef.current, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+      const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
       const resizedDetections = faceapi.resizeResults(detections, displaySize);
 
       const ctx = canvasRef.current.getContext('2d');
@@ -145,40 +151,47 @@ export default function WebcamPanel({
       if (resizedDetections && resizedDetections.length > 0 && resizedDetections[0]) {
         const landmarks = resizedDetections[0].landmarks.positions;
         faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
-      
-        const ear = calculateEAR(landmarks);
-        const mar = calculateMAR(landmarks);
-        const { yaw, pitch, roll } = calculateHeadPose(landmarks);
 
-        onNewFaceMetrics({ ear, mar, yaw, pitch, roll });
+        const timestamp = Date.now();
 
-        if (sessionActive && (ear !== null && mar !== null && yaw !== null && pitch !== null && roll !== null)) {
-            const { attentionState } = await analyzeFacialFeatures({
-                faceLandmarks: JSON.stringify(landmarks), ear, mar, yaw, pitch, roll
-            });
-            
-            let score = 50;
-            if (attentionState === 'Attentive') score = Math.random() * 20 + 80;
-            else if (attentionState === 'Distracted') score = Math.random() * 20 + 40;
-            else if (attentionState === 'Multitasking') score = Math.random() * 20;
+        // Calculate extended metrics using the aggregator
+        const extendedMetrics = metricsAggregatorRef.current.calculateExtendedMetrics(
+          landmarks,
+          video.videoWidth,
+          video.videoHeight,
+          timestamp
+        );
 
-            onNewDataPoint({
-              timestamp: Date.now(),
-              attentionScore: Math.round(score),
-              attentionState,
-            });
+        onNewFaceMetrics(extendedMetrics);
+
+        // Only record data points at intervals when session is active
+        if (sessionActive && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
+          lastDataPointTime.current = timestamp;
+
+          // Get ML prediction
+          const mlEngine = getMLEngine();
+          const prediction = mlEngine.predict(extendedMetrics);
+
+          onNewPrediction(prediction);
+
+          onNewDataPoint({
+            timestamp,
+            attentionScore: prediction.rawScore,
+            attentionState: prediction.attentionState,
+          });
         }
       } else {
         onNewFaceMetrics(null);
+        onNewPrediction(null);
       }
-    } catch(e) {
+    } catch (e) {
       console.error("AI analysis failed", e);
     }
     if (isWebcamOn) {
       animationFrameRef.current = requestAnimationFrame(runAnalysis);
     }
-  }, [modelsLoaded, isWebcamOn, sessionActive, onNewDataPoint, onNewFaceMetrics]);
-  
+  }, [modelsLoaded, isWebcamOn, sessionActive, onNewDataPoint, onNewFaceMetrics, onNewPrediction]);
+
   useEffect(() => {
     if (isWebcamOn && modelsLoaded) {
       animationFrameRef.current = requestAnimationFrame(runAnalysis);
@@ -189,7 +202,7 @@ export default function WebcamPanel({
       stopAnalysis();
     };
   }, [isWebcamOn, modelsLoaded, runAnalysis, stopAnalysis]);
-  
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -205,6 +218,10 @@ export default function WebcamPanel({
         toast({ title: 'Webcam is off', description: 'Please turn on the webcam to start a session.' });
         return;
       }
+      // Reset ML engine and metrics aggregator for new session
+      resetMLEngine();
+      metricsAggregatorRef.current = new FaceMetricsAggregator();
+      lastDataPointTime.current = 0;
       onStartSession();
     }
   }
@@ -219,7 +236,7 @@ export default function WebcamPanel({
       await startWebcam();
     }
   }
-  
+
   const isLoading = !modelsLoaded;
 
   return (
@@ -227,7 +244,7 @@ export default function WebcamPanel({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Webcam Feed</CardTitle>
         <div className="flex items-center gap-2">
-           <Button onClick={handleWebcamToggle} size="icon" variant="outline" disabled={isLoading}>
+          <Button onClick={handleWebcamToggle} size="icon" variant="outline" disabled={isLoading}>
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : isWebcamOn ? <VideoOff className="h-4 w-4" /> : <Video className="h-4 w-4" />}
           </Button>
           <Button onClick={handleSessionToggle} disabled={!isWebcamOn || isLoading} className="w-32">
