@@ -1,6 +1,6 @@
 /**
- * CognEn Extension - ML Core Library v2
- * STRICTER thresholds for more accurate attention detection
+ * CognEn Extension - ML Core Library v3
+ * VERY STRICT thresholds - looking away = immediate penalty
  */
 
 // ==================== CONSTANTS ====================
@@ -11,27 +11,26 @@ const NORMAL_BLINK_RATE_MIN = 15;
 const NORMAL_BLINK_RATE_MAX = 20;
 const FATIGUE_EAR_THRESHOLD = 0.25;
 
-// STRICTER THRESHOLDS
+// VERY STRICT THRESHOLDS
 const THRESHOLDS = {
-    ATTENTIVE_MIN: 75,  // Was 70 - now stricter
-    DISTRACTED_MIN: 45, // Was 40 - now stricter
+    ATTENTIVE_MIN: 80,  // Must be very engaged
+    DISTRACTED_MIN: 50, // Middle ground
 };
 
-// Feature weights - emphasize gaze and head pose more
+// Feature weights - HEAVILY emphasize gaze and head pose
 const FEATURE_WEIGHTS = {
-    ear: 0.12,
-    perclos: 0.10,
-    blinkRate: 0.06,
-    gazeDeviation: 0.18,      // Increased - gaze is critical
-    headPoseStability: 0.12,
-    yawDeviation: 0.12,       // Increased - looking away matters
-    pitchDeviation: 0.08,     // Increased - looking down matters
-    fatigueIndex: 0.08,
-    fidgetScore: 0.05,
-    eyebrowRaise: 0.02,
+    gazeDeviation: 0.25,      // PRIMARY - gaze is critical
+    yawDeviation: 0.20,       // Looking left/right is BAD
+    pitchDeviation: 0.12,     // Looking down at phone etc
+    headPoseStability: 0.10,
+    ear: 0.08,
+    perclos: 0.08,
+    fatigueIndex: 0.06,
+    blinkRate: 0.04,
+    fidgetScore: 0.03,
     mouthOpenness: 0.02,
-    faceDistance: 0.02,
-    facePresence: 0.03,
+    faceDistance: 0.01,
+    facePresence: 0.01,
 };
 
 // ==================== UTILITY FUNCTIONS ====================
@@ -92,6 +91,8 @@ function calculateHeadPose(landmarks) {
     const leftEye = landmarks[36];
     const rightEye = landmarks[45];
     const chin = landmarks[8];
+    const leftCheek = landmarks[0];
+    const rightCheek = landmarks[16];
 
     if (!nose || !leftEye || !rightEye || !chin) return { yaw: null, pitch: null, roll: null };
 
@@ -102,12 +103,20 @@ function calculateHeadPose(landmarks) {
 
     const eyeDist = distance(leftEye, rightEye);
     const noseChinDist = distance(nose, chin);
+    const faceWidth = distance(leftCheek, rightCheek);
 
     if (eyeDist === 0 || noseChinDist === 0) return { yaw: null, pitch: null, roll: null };
 
-    // More sensitive yaw/pitch calculation
-    const yaw = ((nose.x - eyeMidpoint.x) / eyeDist) * 60;  // Increased sensitivity
-    const pitch = ((nose.y - eyeMidpoint.y) / noseChinDist) * 60;  // Increased sensitivity
+    // MORE SENSITIVE yaw calculation using nose-to-cheek asymmetry
+    const leftNoseDist = distance(nose, leftCheek);
+    const rightNoseDist = distance(nose, rightCheek);
+    const asymmetry = (rightNoseDist - leftNoseDist) / faceWidth;
+    const yaw = asymmetry * 100;  // Very sensitive to turning
+
+    // Pitch from nose position relative to eye-chin line
+    const pitch = ((nose.y - eyeMidpoint.y) / noseChinDist - 0.35) * 100;
+
+    // Roll from eye angle
     const roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x) * (180 / Math.PI);
 
     return { yaw, pitch, roll };
@@ -117,9 +126,11 @@ function calculateGazeDirection(landmarks) {
     if (!landmarks || landmarks.length < 68) return { gazeX: null, gazeY: null };
 
     // Left eye
+    const leftEyeLeft = landmarks[36];
+    const leftEyeRight = landmarks[39];
     const leftEyeCenter = {
-        x: (landmarks[36].x + landmarks[39].x) / 2,
-        y: (landmarks[36].y + landmarks[39].y) / 2,
+        x: (leftEyeLeft.x + leftEyeRight.x) / 2,
+        y: (leftEyeLeft.y + leftEyeRight.y) / 2,
     };
     const leftIrisCenter = {
         x: (landmarks[37].x + landmarks[38].x + landmarks[40].x + landmarks[41].x) / 4,
@@ -127,33 +138,35 @@ function calculateGazeDirection(landmarks) {
     };
 
     // Right eye
+    const rightEyeLeft = landmarks[42];
+    const rightEyeRight = landmarks[45];
     const rightEyeCenter = {
-        x: (landmarks[42].x + landmarks[45].x) / 2,
-        y: (landmarks[42].y + landmarks[45].y) / 2,
+        x: (rightEyeLeft.x + rightEyeRight.x) / 2,
+        y: (rightEyeLeft.y + rightEyeRight.y) / 2,
     };
     const rightIrisCenter = {
         x: (landmarks[43].x + landmarks[44].x + landmarks[46].x + landmarks[47].x) / 4,
         y: (landmarks[43].y + landmarks[44].y + landmarks[46].y + landmarks[47].y) / 4,
     };
 
-    const leftEyeWidth = distance(landmarks[36], landmarks[39]);
-    const rightEyeWidth = distance(landmarks[42], landmarks[45]);
-    const leftEyeHeight = distance(landmarks[37], landmarks[41]);
-    const rightEyeHeight = distance(landmarks[43], landmarks[47]);
+    const leftEyeWidth = distance(leftEyeLeft, leftEyeRight);
+    const rightEyeWidth = distance(rightEyeLeft, rightEyeRight);
 
     if (leftEyeWidth === 0 || rightEyeWidth === 0) return { gazeX: null, gazeY: null };
 
-    // Calculate gaze X (left-right)
-    const leftGazeX = ((leftIrisCenter.x - leftEyeCenter.x) / leftEyeWidth) * 2;
-    const rightGazeX = ((rightIrisCenter.x - rightEyeCenter.x) / rightEyeWidth) * 2;
+    // Calculate gaze X (left-right) - VERY SENSITIVE
+    const leftGazeX = ((leftIrisCenter.x - leftEyeCenter.x) / leftEyeWidth) * 3;
+    const rightGazeX = ((rightIrisCenter.x - rightEyeCenter.x) / rightEyeWidth) * 3;
 
-    // Calculate gaze Y (up-down) - FIX: now properly calculated
-    const leftGazeY = ((leftIrisCenter.y - leftEyeCenter.y) / (leftEyeHeight || 1)) * 2;
-    const rightGazeY = ((rightIrisCenter.y - rightEyeCenter.y) / (rightEyeHeight || 1)) * 2;
+    // Calculate gaze Y (up-down) - VERY SENSITIVE
+    const leftEyeHeight = distance(landmarks[37], landmarks[41]) || 1;
+    const rightEyeHeight = distance(landmarks[43], landmarks[47]) || 1;
+    const leftGazeY = ((leftIrisCenter.y - leftEyeCenter.y) / leftEyeHeight) * 3;
+    const rightGazeY = ((rightIrisCenter.y - rightEyeCenter.y) / rightEyeHeight) * 3;
 
     return {
-        gazeX: clamp((leftGazeX + rightGazeX) / 2, -1, 1),
-        gazeY: clamp((leftGazeY + rightGazeY) / 2, -1, 1),
+        gazeX: clamp((leftGazeX + rightGazeX) / 2, -1.5, 1.5),
+        gazeY: clamp((leftGazeY + rightGazeY) / 2, -1.5, 1.5),
     };
 }
 
@@ -199,15 +212,17 @@ class BlinkDetector {
         this.blinkEvents = [];
         this.wasEyeClosed = false;
         this.eyeClosureStart = null;
+        this.lastBlinkTime = 0;
     }
 
     detectBlink(ear, timestamp) {
         if (ear === null) {
-            return { blinkDetected: false, blinkRate: this.getBlinkRate(), perclos: this.getPERCLOS(timestamp) };
+            return { blinkDetected: false, blinkRate: this.getBlinkRate(timestamp), perclos: this.getPERCLOS(timestamp) };
         }
 
         this.earHistory.push({ time: timestamp, ear });
 
+        // Keep 2 minutes of history
         const cutoff = timestamp - 120000;
         this.earHistory = this.earHistory.filter(e => e.time > cutoff);
         this.blinkEvents = this.blinkEvents.filter(t => t > cutoff);
@@ -215,44 +230,50 @@ class BlinkDetector {
         const isEyeClosed = ear < EAR_BLINK_THRESHOLD;
         let blinkDetected = false;
 
+        // Detect blink start
         if (isEyeClosed && !this.wasEyeClosed) {
             this.eyeClosureStart = timestamp;
         }
 
+        // Detect blink end
         if (this.wasEyeClosed && !isEyeClosed && this.eyeClosureStart) {
             const blinkDuration = timestamp - this.eyeClosureStart;
-            if (blinkDuration >= 50 && blinkDuration <= 500) {
+            // Valid blink: 50-400ms, and at least 200ms since last blink
+            if (blinkDuration >= 50 && blinkDuration <= 400 && (timestamp - this.lastBlinkTime) > 200) {
                 blinkDetected = true;
                 this.blinkEvents.push(timestamp);
+                this.lastBlinkTime = timestamp;
+                console.log('[BlinkDetector] Blink detected! Total:', this.blinkEvents.length);
             }
             this.eyeClosureStart = null;
         }
 
         this.wasEyeClosed = isEyeClosed;
 
-        return {
-            blinkDetected,
-            blinkRate: this.getBlinkRate(),
-            perclos: this.getPERCLOS(timestamp),
-        };
+        const blinkRate = this.getBlinkRate(timestamp);
+        const perclos = this.getPERCLOS(timestamp);
+
+        return { blinkDetected, blinkRate, perclos };
     }
 
-    getBlinkRate() {
-        const now = Date.now();
+    getBlinkRate(currentTime) {
+        if (this.blinkEvents.length === 0) return 0;
+
+        const now = currentTime || Date.now();
         const oneMinuteAgo = now - 60000;
         const recentBlinks = this.blinkEvents.filter(t => t > oneMinuteAgo);
 
-        // Calculate based on actual time window we have data for
-        if (this.earHistory.length < 10) return 0;
+        // If we have less than 60 seconds of data, scale up
+        if (this.earHistory.length < 50) return 0;
 
         const oldestData = this.earHistory[0].time;
         const timeSpan = now - oldestData;
 
-        if (timeSpan < 10000) return 0; // Need at least 10 seconds
+        if (timeSpan < 5000) return 0; // Need at least 5 seconds
 
-        // Scale to per-minute
-        const scaleFactor = 60000 / Math.min(timeSpan, 60000);
-        return recentBlinks.length * scaleFactor;
+        // Calculate actual blinks per minute
+        const actualTimeMinutes = Math.min(timeSpan, 60000) / 60000;
+        return recentBlinks.length / actualTimeMinutes;
     }
 
     getPERCLOS(currentTime) {
@@ -279,6 +300,7 @@ class BlinkDetector {
         this.blinkEvents = [];
         this.wasEyeClosed = false;
         this.eyeClosureStart = null;
+        this.lastBlinkTime = 0;
     }
 }
 
@@ -307,7 +329,7 @@ class HeadPoseTracker {
 
         const combinedVar = (calculateVariance(yaws) + calculateVariance(pitches) + calculateVariance(rolls) * 0.5) / 2.5;
 
-        return clamp(100 - (combinedVar / 5), 0, 100);  // More sensitive
+        return clamp(100 - (combinedVar / 3), 0, 100);  // More sensitive
     }
 
     getFidgetScore() {
@@ -322,17 +344,7 @@ class HeadPoseTracker {
         }
 
         const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;
-        return clamp(avgDiff * 8, 0, 100);  // More sensitive
-    }
-
-    getPoseVariance() {
-        if (this.poseHistory.length < 2) return 0;
-
-        const yaws = this.poseHistory.map(p => p.yaw);
-        const pitches = this.poseHistory.map(p => p.pitch);
-        const rolls = this.poseHistory.map(p => p.roll);
-
-        return (calculateVariance(yaws) + calculateVariance(pitches) + calculateVariance(rolls)) / 3;
+        return clamp(avgDiff * 10, 0, 100);
     }
 
     reset() {
@@ -363,26 +375,29 @@ class FatigueCalculator {
     }
 
     calculateFatigueIndex() {
-        if (this.perclosHistory.length < 5) return 0;
+        if (this.perclosHistory.length < 3) return 0;
 
         const avgPerclos = this.perclosHistory.reduce((a, b) => a + b.value, 0) / this.perclosHistory.length;
-        const perclosScore = clamp(avgPerclos * 2.5, 0, 50);  // Increased weight
+        const perclosScore = clamp(avgPerclos * 3, 0, 50);
 
         const avgBlinkRate = this.blinkRateHistory.reduce((a, b) => a + b.value, 0) / this.blinkRateHistory.length;
         let blinkScore = 0;
-        if (avgBlinkRate < NORMAL_BLINK_RATE_MIN) {
-            blinkScore = clamp((NORMAL_BLINK_RATE_MIN - avgBlinkRate) * 3, 0, 30);
-        } else if (avgBlinkRate > NORMAL_BLINK_RATE_MAX) {
-            blinkScore = clamp((avgBlinkRate - NORMAL_BLINK_RATE_MAX) * 2, 0, 30);
+        if (avgBlinkRate > 0) {
+            if (avgBlinkRate < NORMAL_BLINK_RATE_MIN) {
+                blinkScore = clamp((NORMAL_BLINK_RATE_MIN - avgBlinkRate) * 3, 0, 30);
+            } else if (avgBlinkRate > NORMAL_BLINK_RATE_MAX) {
+                blinkScore = clamp((avgBlinkRate - NORMAL_BLINK_RATE_MAX) * 2, 0, 30);
+            }
         }
 
         let earTrendScore = 0;
-        if (this.earMeanHistory.length > 10) {
-            const recentEars = this.earMeanHistory.slice(-10).map(e => e.value);
-            const avgEar = recentEars.reduce((a, b) => a + b, 0) / recentEars.length;
-
-            if (avgEar < FATIGUE_EAR_THRESHOLD) {
-                earTrendScore = clamp((FATIGUE_EAR_THRESHOLD - avgEar) * 150, 0, 30);
+        if (this.earMeanHistory.length > 5) {
+            const recentEars = this.earMeanHistory.slice(-5).map(e => e.value).filter(v => v > 0);
+            if (recentEars.length > 0) {
+                const avgEar = recentEars.reduce((a, b) => a + b, 0) / recentEars.length;
+                if (avgEar < FATIGUE_EAR_THRESHOLD) {
+                    earTrendScore = clamp((FATIGUE_EAR_THRESHOLD - avgEar) * 200, 0, 30);
+                }
             }
         }
 
@@ -422,7 +437,6 @@ class FaceMetricsAggregator {
         this.headPoseTracker.addPose(headPose, timestamp);
         const headPoseStability = this.headPoseTracker.getStability();
         const fidgetScore = this.headPoseTracker.getFidgetScore();
-        const poseVariance = this.headPoseTracker.getPoseVariance();
 
         const gaze = calculateGazeDirection(landmarks);
         const faceDistance = estimateFaceDistance(landmarks, frameWidth);
@@ -447,11 +461,8 @@ class FaceMetricsAggregator {
             fatigueIndex,
             fidgetScore,
             headPoseStability,
-            eyebrowRaise: null,
             mouthOpenness,
             earVariance: earStats.variance,
-            marVariance: calculateVariance(this.marHistory),
-            poseVariance,
         };
     }
 
@@ -466,7 +477,7 @@ class FaceMetricsAggregator {
 // ==================== ML ENGINE ====================
 
 class ExponentialMovingAverage {
-    constructor(alpha = 0.2) {
+    constructor(alpha = 0.3) {
         this.alpha = alpha;
         this.value = null;
     }
@@ -480,114 +491,85 @@ class ExponentialMovingAverage {
         return this.value;
     }
 
-    getValue() {
-        return this.value;
-    }
-
     reset() {
         this.value = null;
     }
 }
 
-// STRICTER feature scoring
-function scoreFeature(name, value, metrics) {
+// VERY STRICT feature scoring
+function scoreFeature(name, value) {
     if (value === null || isNaN(value)) {
-        return { score: 40, contribution: 0, quality: 0 };  // Lower default
+        return { score: 30, quality: 0 };  // Unknown = assume bad
     }
 
     let score = 50;
     let quality = 1;
 
     switch (name) {
-        case 'ear':
-            // Eyes open = good
-            if (value >= 0.28 && value <= 0.4) {
-                score = 90;
-            } else if (value >= 0.22 && value < 0.28) {
-                score = 70;
-            } else if (value < 0.22) {
-                score = Math.max(20, value / 0.22 * 50);  // Eyes closing = bad
-            } else {
-                score = 85;
-            }
-            break;
-
-        case 'perclos':
-            // PERCLOS > 15% is concerning
-            if (value <= 10) {
-                score = 95;
-            } else if (value <= 20) {
-                score = 80 - (value - 10);
-            } else {
-                score = Math.max(10, 70 - (value - 20) * 2);
-            }
-            break;
-
-        case 'blinkRate':
-            if (value >= 12 && value <= 20) {
-                score = 85;
-            } else if (value < 12) {
-                score = 60 + (value / 12) * 25;
-            } else {
-                score = Math.max(40, 85 - (value - 20) * 4);
-            }
-            quality = value > 0 ? 1 : 0.3;
-            break;
-
         case 'gazeDeviation':
-            // STRICT: Looking away should heavily penalize
-            if (value <= 0.15) {
-                score = 95;  // Looking straight
-            } else if (value <= 0.3) {
-                score = 80 - ((value - 0.15) / 0.15) * 30;  // Slight deviation
+            // VERY STRICT - any gaze away is BAD
+            if (value <= 0.1) {
+                score = 100;  // Looking straight
+            } else if (value <= 0.25) {
+                score = 70 - ((value - 0.1) / 0.15) * 40;  // Drops to 30
             } else if (value <= 0.5) {
-                score = 50 - ((value - 0.3) / 0.2) * 30;  // Moderate deviation
+                score = 30 - ((value - 0.25) / 0.25) * 20;  // Drops to 10
             } else {
-                score = Math.max(10, 20 - (value - 0.5) * 20);  // Looking away = very bad
+                score = 10;  // Looking away = very bad
             }
-            break;
-
-        case 'headPoseStability':
-            score = value * 0.95;  // Direct mapping with slight penalty
             break;
 
         case 'yawDeviation':
-            // STRICT: Looking left/right is bad
+            // VERY STRICT - turning head is BAD
             const absYaw = Math.abs(value);
-            if (absYaw <= 8) {
-                score = 95;
-            } else if (absYaw <= 15) {
-                score = 85 - ((absYaw - 8) / 7) * 25;
+            if (absYaw <= 5) {
+                score = 100;  // Facing forward
+            } else if (absYaw <= 12) {
+                score = 80 - ((absYaw - 5) / 7) * 40;  // Drops to 40
             } else if (absYaw <= 25) {
-                score = 60 - ((absYaw - 15) / 10) * 30;
+                score = 40 - ((absYaw - 12) / 13) * 25;  // Drops to 15
             } else {
-                score = Math.max(10, 30 - (absYaw - 25) * 2);
+                score = 10;  // Turned away
             }
             break;
 
         case 'pitchDeviation':
             // Looking up/down
             const absPitch = Math.abs(value);
-            if (absPitch <= 10) {
-                score = 90;
-            } else if (absPitch <= 20) {
-                score = 75 - ((absPitch - 10) / 10) * 25;
+            if (absPitch <= 8) {
+                score = 95;
+            } else if (absPitch <= 18) {
+                score = 75 - ((absPitch - 8) / 10) * 35;
             } else {
-                score = Math.max(20, 50 - (absPitch - 20) * 2);
+                score = Math.max(15, 40 - (absPitch - 18) * 1.5);
+            }
+            break;
+
+        case 'headPoseStability':
+            score = value;  // Direct mapping
+            break;
+
+        case 'ear':
+            if (value >= 0.28) {
+                score = 95;  // Eyes fully open
+            } else if (value >= 0.22) {
+                score = 75;  // Eyes normal
+            } else {
+                score = Math.max(20, value / 0.22 * 60);  // Eyes closing
+            }
+            break;
+
+        case 'perclos':
+            if (value <= 8) {
+                score = 95;
+            } else if (value <= 20) {
+                score = 80 - (value - 8);
+            } else {
+                score = Math.max(10, 68 - (value - 20) * 2);
             }
             break;
 
         case 'fatigueIndex':
-            if (value <= 20) {
-                score = 95 - value * 0.5;
-            } else if (value <= 50) {
-                score = 85 - (value - 20);
-            } else {
-                score = Math.max(15, 55 - (value - 50));
-            }
-            break;
-
-        case 'fidgetScore':
             if (value <= 15) {
                 score = 95;
             } else if (value <= 40) {
@@ -597,57 +579,67 @@ function scoreFeature(name, value, metrics) {
             }
             break;
 
-        case 'mouthOpenness':
-            if (value < 0.1) {
-                score = 85;
-            } else if (value < 0.25) {
-                score = 70;  // Slight open
+        case 'blinkRate':
+            if (value >= 12 && value <= 20) {
+                score = 90;
+            } else if (value === 0) {
+                score = 70;  // No data yet
+                quality = 0.5;
+            } else if (value < 12) {
+                score = 60;  // Staring
             } else {
-                score = 40;  // Yawning
+                score = Math.max(50, 90 - (value - 20) * 3);
             }
-            quality = 0.5;
             break;
 
-        case 'faceDistance':
-            if (value >= 0.3 && value <= 0.7) {
-                score = 90;
+        case 'fidgetScore':
+            if (value <= 10) {
+                score = 95;
+            } else if (value <= 30) {
+                score = 85 - (value - 10);
             } else {
-                score = 60;
+                score = Math.max(30, 65 - (value - 30));
             }
+            break;
+
+        case 'mouthOpenness':
+            if (value < 0.08) score = 90;
+            else if (value < 0.2) score = 70;
+            else score = 40;  // Yawning
             quality = 0.4;
             break;
 
+        case 'faceDistance':
         case 'facePresence':
-            score = value >= 0.03 ? 100 : 10;  // More strict
+            score = 80;  // These are less important
+            quality = 0.3;
             break;
     }
 
-    const weight = FEATURE_WEIGHTS[name] || 0;
-    const contribution = (score - 50) * weight * quality;
-
-    return { score, contribution, quality };
+    return { score, quality };
 }
 
 class MLEngine {
     constructor() {
-        this.scoreEMA = new ExponentialMovingAverage(0.25);  // More responsive
+        this.scoreEMA = new ExponentialMovingAverage(0.35);  // More responsive
         this.predictionHistory = [];
     }
 
     predict(metrics) {
+        // Calculate gaze deviation
         const gazeDeviation = metrics.gazeX !== null && metrics.gazeY !== null
             ? Math.sqrt(metrics.gazeX ** 2 + metrics.gazeY ** 2)
-            : null;
+            : 0.5;  // Assume looking away if no data
 
         const featureValues = {
-            ear: metrics.ear,
-            perclos: metrics.perclos,
-            blinkRate: metrics.blinkRate,
             gazeDeviation,
-            headPoseStability: metrics.headPoseStability,
             yawDeviation: metrics.yaw,
             pitchDeviation: metrics.pitch,
+            headPoseStability: metrics.headPoseStability,
+            ear: metrics.ear,
+            perclos: metrics.perclos,
             fatigueIndex: metrics.fatigueIndex,
+            blinkRate: metrics.blinkRate,
             fidgetScore: metrics.fidgetScore,
             mouthOpenness: metrics.mouthOpenness,
             faceDistance: metrics.faceDistance,
@@ -656,29 +648,19 @@ class MLEngine {
 
         let totalWeight = 0;
         let weightedSum = 0;
-        let qualitySum = 0;
-        const featureContributions = {};
 
         for (const [name, value] of Object.entries(featureValues)) {
-            const result = scoreFeature(name, value, metrics);
-            featureContributions[name] = result.contribution;
-
+            const result = scoreFeature(name, value);
             const weight = FEATURE_WEIGHTS[name] || 0;
-            if (value !== null && weight > 0) {
+
+            if (weight > 0) {
                 weightedSum += result.score * weight * result.quality;
                 totalWeight += weight * result.quality;
-                qualitySum += result.quality;
             }
         }
 
         let rawScore = totalWeight > 0 ? weightedSum / totalWeight : 40;
         const smoothedScore = this.scoreEMA.update(rawScore);
-
-        const featureCount = Object.values(featureValues).filter(v => v !== null).length;
-        const maxFeatures = Object.keys(FEATURE_WEIGHTS).length;
-        const completeness = featureCount / maxFeatures;
-        const avgQuality = featureCount > 0 ? qualitySum / featureCount : 0;
-        const confidence = completeness * avgQuality * 0.9 + 0.1;
 
         let attentionState;
         if (smoothedScore >= THRESHOLDS.ATTENTIVE_MIN) {
@@ -691,10 +673,8 @@ class MLEngine {
 
         const prediction = {
             attentionState,
-            confidence,
+            confidence: 0.85,
             rawScore: Math.round(smoothedScore),
-            featureImportance: FEATURE_WEIGHTS,
-            featureContributions,
         };
 
         this.predictionHistory.push(prediction);
@@ -719,3 +699,5 @@ if (typeof window !== 'undefined') {
     window.HeadPoseTracker = HeadPoseTracker;
     window.FatigueCalculator = FatigueCalculator;
 }
+
+console.log('[ML-Core] v3 loaded - STRICT mode');

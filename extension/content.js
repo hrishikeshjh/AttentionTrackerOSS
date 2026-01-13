@@ -207,9 +207,10 @@
       const score = result.prediction.rawScore;
       scoreEl.textContent = String(score);
 
-      if (score < 40) {
+      // Updated thresholds to match ml-core v3
+      if (score < 50) {
         scoreEl.style.color = '#F85149';
-      } else if (score < 70) {
+      } else if (score < 80) {
         scoreEl.style.color = '#FFA657';
       } else {
         scoreEl.style.color = '#00FF99';
@@ -218,12 +219,16 @@
       stateEl.textContent = result.prediction.attentionState || 'Unknown';
 
       if (result.metrics) {
-        blinkEl.textContent = result.metrics.blinkRate ? result.metrics.blinkRate.toFixed(1) : '-';
+        // Always show blink rate, default to 0.0 if undefined
+        const br = result.metrics.blinkRate;
+        blinkEl.textContent = (br !== undefined && br !== null) ? br.toFixed(1) : '0.0';
+
         const f = result.metrics.fatigueIndex || 0;
         fatigueEl.textContent = f < 30 ? 'Low' : f < 60 ? 'Med' : 'High';
       }
     } else {
       scoreEl.textContent = '--';
+      scoreEl.style.color = '#F85149';
       stateEl.textContent = result ? 'No Face' : 'Processing...';
     }
   }
