@@ -2,15 +2,19 @@
   "manifest_version": 3,
   "name": "CognEn - Cognitive Engagement Analyzer",
   "version": "1.0.0",
-  "description": "Monitor your attention and cognitive engagement in real-time using facial analysis. Stay focused and productive.",
+  "description": "Monitor your attention and cognitive engagement in real-time using facial analysis. Works with Google Meet!",
   "permissions": [
     "storage",
     "alarms",
     "activeTab",
     "notifications",
-    "offscreen"
+    "offscreen",
+    "scripting"
   ],
   "host_permissions": [
+    "https://meet.google.com/*",
+    "https://*.zoom.us/*",
+    "https://teams.microsoft.com/*",
     "<all_urls>"
   ],
   "action": {
@@ -31,13 +35,6 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "web_accessible_resources": [
     {
       "resources": ["lib/*", "icons/*", "offscreen.html"],

@@ -1,6 +1,7 @@
 /**
  * CognEn Extension - Background Service Worker
  * Handles both offscreen camera (standalone) and Meet injection modes
+ * Uses chrome.scripting to inject content script programmatically
  */
 
 const BADGE_COLORS = {
@@ -65,9 +66,43 @@ async function checkIfMeetTab() {
     }
 }
 
+async function injectContentScript(tabId) {
+    try {
+        // First inject the ML core library
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['lib/ml-core.js']
+        });
+        console.log('[BG] Injected ml-core.js');
+
+        // Then inject the content script
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content.js']
+        });
+        console.log('[BG] Injected content.js');
+
+        return true;
+    } catch (e) {
+        console.error('[BG] Script injection failed:', e);
+        return false;
+    }
+}
+
 async function startMeetTracking(tabId) {
     try {
+        // First inject the scripts
+        const injected = await injectContentScript(tabId);
+        if (!injected) {
+            throw new Error('Failed to inject scripts');
+        }
+
+        // Wait a bit for scripts to initialize
+        await new Promise(r => setTimeout(r, 500));
+
+        // Now send the start message
         await chrome.tabs.sendMessage(tabId, { action: 'START_MEET_TRACKING' });
+        console.log('[BG] Meet tracking started');
         return true;
     } catch (e) {
         console.error('[BG] Failed to start Meet tracking:', e);
@@ -78,7 +113,9 @@ async function startMeetTracking(tabId) {
 async function stopMeetTracking(tabId) {
     try {
         await chrome.tabs.sendMessage(tabId, { action: 'STOP_MEET_TRACKING' });
-    } catch (e) { }
+    } catch (e) {
+        console.log('[BG] Could not send stop message (tab may be closed)');
+    }
 }
 
 // ==================== MESSAGE HANDLING ====================
@@ -96,7 +133,6 @@ async function handlePopupMessage(message, sendResponse) {
 
     switch (message.action) {
         case 'CHECK_MODE':
-            // Check if we're on a Meet tab
             const meetCheck = await checkIfMeetTab();
             sendResponse(meetCheck);
             break;
@@ -107,16 +143,20 @@ async function handlePopupMessage(message, sendResponse) {
 
                 if (meetInfo.isMeet && meetInfo.tabId) {
                     // Meet mode: inject into page
-                    console.log('[BG] Starting Meet mode');
+                    console.log('[BG] Starting Meet mode on tab', meetInfo.tabId);
                     const success = await startMeetTracking(meetInfo.tabId);
+
+                    if (!success) {
+                        throw new Error('Failed to inject into Meet page');
+                    }
 
                     await chrome.storage.local.set({
                         sessionMode: 'meet',
                         sessionTabId: meetInfo.tabId,
-                        cameraRunning: success
+                        cameraRunning: true
                     });
 
-                    sendResponse({ success, mode: 'meet' });
+                    sendResponse({ success: true, mode: 'meet' });
                 } else {
                     // Standalone mode: use offscreen document
                     console.log('[BG] Starting standalone mode');
@@ -128,7 +168,11 @@ async function handlePopupMessage(message, sendResponse) {
                             await chrome.runtime.sendMessage({ type: 'START_CAMERA' });
                         } catch (e) {
                             await new Promise(r => setTimeout(r, 1000));
-                            await chrome.runtime.sendMessage({ type: 'START_CAMERA' });
+                            try {
+                                await chrome.runtime.sendMessage({ type: 'START_CAMERA' });
+                            } catch (e2) {
+                                console.log('[BG] Could not send START_CAMERA');
+                            }
                         }
                     }
 
@@ -140,6 +184,7 @@ async function handlePopupMessage(message, sendResponse) {
                 chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.medium });
 
             } catch (error) {
+                console.error('[BG] START_SESSION error:', error);
                 sendResponse({ success: false, error: error.message });
             }
             break;
