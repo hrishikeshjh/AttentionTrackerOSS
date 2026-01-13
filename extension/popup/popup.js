@@ -1,6 +1,6 @@
 /**
- * CognEn Extension Popup Script
- * Detects if on Meet tab and uses appropriate mode
+ * CognEn Extension Popup Script v1.1
+ * Now with live chart and improved face detection status
  */
 
 // DOM Elements
@@ -21,6 +21,8 @@ const avgScoreEl = document.getElementById('avgScore');
 const blinkRateEl = document.getElementById('blinkRate');
 const fatigueLevelEl = document.getElementById('fatigueLevel');
 const settingsBtn = document.getElementById('settingsBtn');
+const chartContainer = document.getElementById('chartContainer');
+const liveChart = document.getElementById('liveChart');
 
 // State
 let isSessionActive = false;
@@ -28,41 +30,85 @@ let sessionStartTime = null;
 let sessionTimerInterval = null;
 let sessionScores = [];
 let pollInterval = null;
-let currentMode = null; // 'meet' or 'standalone'
+let currentMode = null;
+let chartData = [];
+let noFaceCount = 0;
+const MAX_CHART_POINTS = 60;
+
+// Chart rendering
+function drawChart() {
+    if (!liveChart || chartData.length < 2) return;
+
+    const ctx = liveChart.getContext('2d');
+    const width = liveChart.width;
+    const height = liveChart.height;
+
+    ctx.clearRect(0, 0, width, height);
+
+    // Background
+    ctx.fillStyle = 'rgba(22, 27, 34, 0.8)';
+    ctx.fillRect(0, 0, width, height);
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(139, 148, 158, 0.2)';
+    ctx.lineWidth = 1;
+    for (let y = 0; y <= 100; y += 25) {
+        const yPos = height - (y / 100) * height;
+        ctx.beginPath();
+        ctx.moveTo(0, yPos);
+        ctx.lineTo(width, yPos);
+        ctx.stroke();
+    }
+
+    // Data line
+    ctx.beginPath();
+    ctx.strokeStyle = '#00FFFF';
+    ctx.lineWidth = 2;
+
+    const step = width / (MAX_CHART_POINTS - 1);
+    chartData.forEach((score, i) => {
+        const x = i * step;
+        const y = height - (score / 100) * height;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Fill under line
+    ctx.lineTo((chartData.length - 1) * step, height);
+    ctx.lineTo(0, height);
+    ctx.closePath();
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, 'rgba(0, 255, 255, 0.3)');
+    gradient.addColorStop(1, 'rgba(0, 255, 255, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    // Current score marker
+    if (chartData.length > 0) {
+        const lastX = (chartData.length - 1) * step;
+        const lastY = height - (chartData[chartData.length - 1] / 100) * height;
+        ctx.beginPath();
+        ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#00FF99';
+        ctx.fill();
+    }
+}
 
 // Initialize
 async function init() {
-    console.log('[Popup] Init');
+    console.log('[Popup] Init v1.1');
 
-    // Check if we're on a Meet tab
     const modeCheck = await sendMessage({ action: 'CHECK_MODE' });
-    console.log('[Popup] Mode check:', modeCheck);
 
     if (modeCheck && modeCheck.isMeet) {
         currentMode = 'meet';
-        statusPlaceholder.innerHTML = `
-      <div style="text-align: center;">
-        <div style="font-size: 32px; margin-bottom: 8px;">🎥</div>
-        <p style="color: #00FFFF; font-weight: 600;">Google Meet Detected</p>
-        <p style="font-size: 11px; color: #8B949E;">Click Start to analyze your video feed</p>
-        <p style="font-size: 10px; color: #6E7681; margin-top: 4px;">No extra camera access needed!</p>
-      </div>
-    `;
+        updatePlaceholder('meet-ready');
     } else {
         currentMode = 'standalone';
-        statusPlaceholder.innerHTML = `
-      <div style="text-align: center;">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
-          <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
-        </svg>
-        <p>Standalone Mode</p>
-        <p style="font-size: 10px; color: #6E7681;">Will use your webcam directly</p>
-      </div>
-    `;
+        updatePlaceholder('standalone-ready');
     }
 
-    // Check existing session
     const state = await chrome.storage.local.get(['sessionActive', 'sessionStartTime', 'lastDetection']);
 
     if (state.sessionActive) {
@@ -78,12 +124,100 @@ async function init() {
     }
 }
 
-// Helper to send messages
+function updatePlaceholder(mode) {
+    const el = statusPlaceholder;
+
+    // Clear existing content
+    while (el.firstChild) el.removeChild(el.firstChild);
+
+    const wrapper = document.createElement('div');
+    wrapper.style.textAlign = 'center';
+
+    if (mode === 'meet-ready') {
+        const icon = document.createElement('div');
+        icon.textContent = '🎥';
+        icon.style.fontSize = '32px';
+        icon.style.marginBottom = '8px';
+
+        const title = document.createElement('p');
+        title.textContent = 'Google Meet Detected';
+        title.style.color = '#00FFFF';
+        title.style.fontWeight = '600';
+
+        const sub = document.createElement('p');
+        sub.textContent = 'Click Start to analyze your video';
+        sub.style.fontSize = '11px';
+        sub.style.color = '#8B949E';
+
+        wrapper.appendChild(icon);
+        wrapper.appendChild(title);
+        wrapper.appendChild(sub);
+    } else if (mode === 'standalone-ready') {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('width', '48');
+        svg.setAttribute('height', '48');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('fill', 'none');
+        svg.innerHTML = '<rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>';
+
+        const title = document.createElement('p');
+        title.textContent = 'Standalone Mode';
+
+        const sub = document.createElement('p');
+        sub.textContent = 'Will use your webcam directly';
+        sub.style.fontSize = '10px';
+        sub.style.color = '#6E7681';
+
+        wrapper.appendChild(svg);
+        wrapper.appendChild(title);
+        wrapper.appendChild(sub);
+    } else if (mode === 'tracking') {
+        const pulse = document.createElement('div');
+        pulse.className = 'pulse-ring';
+
+        const icon = currentMode === 'meet' ? '🎥' : '📷';
+        const title = document.createElement('p');
+        title.textContent = icon + ' Tracking Active';
+        title.style.color = '#3FB950';
+        title.style.fontWeight = '600';
+
+        const sub = document.createElement('p');
+        sub.textContent = currentMode === 'meet' ? 'Analyzing Meet video' : 'Using webcam';
+        sub.style.fontSize = '10px';
+        sub.style.color = '#8B949E';
+
+        wrapper.appendChild(pulse);
+        wrapper.appendChild(title);
+        wrapper.appendChild(sub);
+    } else if (mode === 'no-face') {
+        const icon = document.createElement('div');
+        icon.textContent = '👤';
+        icon.style.fontSize = '32px';
+        icon.style.marginBottom = '8px';
+        icon.style.opacity = '0.5';
+
+        const title = document.createElement('p');
+        title.textContent = 'Face Not Detected';
+        title.style.color = '#F85149';
+        title.style.fontWeight = '600';
+
+        const sub = document.createElement('p');
+        sub.textContent = 'Please face the camera';
+        sub.style.fontSize = '11px';
+        sub.style.color = '#8B949E';
+
+        wrapper.appendChild(icon);
+        wrapper.appendChild(title);
+        wrapper.appendChild(sub);
+    }
+
+    el.appendChild(wrapper);
+}
+
 function sendMessage(message) {
     return new Promise((resolve) => {
         chrome.runtime.sendMessage(message, (response) => {
             if (chrome.runtime.lastError) {
-                console.error('[Popup] Message error:', chrome.runtime.lastError);
                 resolve(null);
             } else {
                 resolve(response);
@@ -92,7 +226,6 @@ function sendMessage(message) {
     });
 }
 
-// Poll for detection results
 function startPolling() {
     if (pollInterval) clearInterval(pollInterval);
 
@@ -105,10 +238,21 @@ function startPolling() {
 
             if (age < 3000) {
                 if (det.hasFace && det.prediction) {
+                    noFaceCount = 0;
                     updateUI(det.prediction, det.metrics);
+
+                    // Add to chart data
+                    chartData.push(det.prediction.rawScore);
+                    if (chartData.length > MAX_CHART_POINTS) chartData.shift();
+                    drawChart();
+
                     sessionScores.push(det.prediction.rawScore);
                 } else {
-                    updateUINoFace();
+                    noFaceCount++;
+                    if (noFaceCount >= 5) {
+                        updateUINoFace();
+                        updatePlaceholder('no-face');
+                    }
                 }
             }
         }
@@ -122,24 +266,19 @@ function stopPolling() {
     }
 }
 
-// Session Controls
 async function startSession() {
-    console.log('[Popup] Starting session, mode:', currentMode);
-
     loadingOverlay.classList.remove('hidden');
     loadingText.textContent = currentMode === 'meet' ? 'Connecting to Meet...' : 'Starting camera...';
     toggleSessionBtn.disabled = true;
 
     try {
         const response = await sendMessage({ action: 'START_SESSION' });
-        console.log('[Popup] START_SESSION response:', response);
 
         if (!response || !response.success) {
             throw new Error(response?.error || 'Failed to start');
         }
 
         if (response.mode === 'standalone') {
-            // Wait for camera in standalone mode
             loadingText.textContent = 'Loading ML models...';
 
             let attempts = 0;
@@ -152,25 +291,25 @@ async function startSession() {
                 if (state.cameraError) throw new Error(state.cameraError);
             }
         } else {
-            // Meet mode - give content script time to initialize
             loadingText.textContent = 'Analyzing Meet video...';
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        // Success
         isSessionActive = true;
         sessionStartTime = Date.now();
         sessionScores = [];
+        chartData = [];
+        noFaceCount = 0;
 
         await chrome.storage.local.set({ sessionActive: true, sessionStartTime });
 
         loadingOverlay.classList.add('hidden');
+        chartContainer.style.display = 'block';
         updateSessionUI(true);
         sessionTimerInterval = setInterval(updateSessionTimer, 1000);
         startPolling();
 
     } catch (error) {
-        console.error('[Popup] Start error:', error);
         loadingOverlay.classList.add('hidden');
         toggleSessionBtn.disabled = false;
         alert('Failed to start: ' + error.message);
@@ -178,8 +317,6 @@ async function startSession() {
 }
 
 async function stopSession() {
-    console.log('[Popup] Stopping session');
-
     isSessionActive = false;
     stopPolling();
 
@@ -205,29 +342,53 @@ async function stopSession() {
     });
 
     updateSessionUI(false);
+    chartContainer.style.display = 'none';
 
     // Show summary
     const duration = Math.floor((Date.now() - sessionStartTime) / 1000);
     const mins = Math.floor(duration / 60);
     const secs = duration % 60;
 
-    statusPlaceholder.innerHTML = `
-    <div style="text-align: center;">
-      <div style="font-size: 32px; margin-bottom: 8px;">✅</div>
-      <p style="color: #3FB950; font-weight: 600;">Session Complete!</p>
-      <p style="font-size: 12px; color: #8B949E;">Duration: ${mins}m ${secs}s</p>
-      <p style="font-size: 12px; color: #8B949E;">Average: ${avgScore}%</p>
-      <p style="font-size: 12px; color: #8B949E;">Data points: ${sessionScores.length}</p>
-    </div>
-  `;
+    const el = statusPlaceholder;
+    while (el.firstChild) el.removeChild(el.firstChild);
+
+    const wrapper = document.createElement('div');
+    wrapper.style.textAlign = 'center';
+
+    const icon = document.createElement('div');
+    icon.textContent = '✅';
+    icon.style.fontSize = '32px';
+    icon.style.marginBottom = '8px';
+
+    const title = document.createElement('p');
+    title.textContent = 'Session Complete!';
+    title.style.color = '#3FB950';
+    title.style.fontWeight = '600';
+
+    const stats = document.createElement('div');
+    stats.style.fontSize = '12px';
+    stats.style.color = '#8B949E';
+    stats.innerHTML = '';
+
+    const line1 = document.createElement('p');
+    line1.textContent = 'Duration: ' + mins + 'm ' + secs + 's';
+    const line2 = document.createElement('p');
+    line2.textContent = 'Average: ' + avgScore + '%';
+    const line3 = document.createElement('p');
+    line3.textContent = 'Data points: ' + sessionScores.length;
+
+    wrapper.appendChild(icon);
+    wrapper.appendChild(title);
+    wrapper.appendChild(line1);
+    wrapper.appendChild(line2);
+    wrapper.appendChild(line3);
+
+    el.appendChild(wrapper);
 }
 
 function toggleSession() {
-    if (isSessionActive) {
-        stopSession();
-    } else {
-        startSession();
-    }
+    if (isSessionActive) stopSession();
+    else startSession();
 }
 
 function updateSessionUI(isActive) {
@@ -239,15 +400,7 @@ function updateSessionUI(isActive) {
         toggleSessionBtn.disabled = false;
         statusDot.classList.add('active', 'recording');
         statusText.textContent = 'Recording';
-
-        const modeIcon = currentMode === 'meet' ? '🎥' : '📷';
-        statusPlaceholder.innerHTML = `
-      <div style="text-align: center;">
-        <div class="pulse-ring"></div>
-        <p style="color: #3FB950; font-weight: 600;">${modeIcon} Tracking Active</p>
-        <p style="font-size: 10px; color: #8B949E;">${currentMode === 'meet' ? 'Analyzing Meet video' : 'Using webcam'}</p>
-      </div>
-    `;
+        updatePlaceholder('tracking');
     } else {
         playIcon.style.display = 'block';
         stopIcon.style.display = 'none';
@@ -265,12 +418,16 @@ function updateSessionTimer() {
     const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
     const minutes = String(Math.floor(elapsed / 60)).padStart(2, '0');
     const seconds = String(elapsed % 60).padStart(2, '0');
-    sessionTimeEl.textContent = `${minutes}:${seconds}`;
+    sessionTimeEl.textContent = minutes + ':' + seconds;
 }
 
-// UI Updates
 function updateUI(prediction, metrics) {
     if (!prediction) return;
+
+    // Restore tracking placeholder if we had no face before
+    if (noFaceCount === 0 && statusPlaceholder.querySelector('p')?.textContent?.includes('Face Not')) {
+        updatePlaceholder('tracking');
+    }
 
     const score = prediction.rawScore;
     scoreNumber.textContent = score;
@@ -279,8 +436,8 @@ function updateUI(prediction, metrics) {
     scoreProgress.style.strokeDashoffset = offset;
 
     scoreProgress.classList.remove('good', 'warning', 'danger');
-    if (score >= 70) scoreProgress.classList.add('good');
-    else if (score >= 40) scoreProgress.classList.add('warning');
+    if (score >= 75) scoreProgress.classList.add('good');
+    else if (score >= 45) scoreProgress.classList.add('warning');
     else scoreProgress.classList.add('danger');
 
     scoreState.textContent = prediction.attentionState || 'Unknown';
@@ -293,8 +450,12 @@ function updateUI(prediction, metrics) {
     }
 
     if (metrics) {
-        if (metrics.blinkRate !== undefined) {
-            blinkRateEl.textContent = metrics.blinkRate.toFixed(1);
+        // Blink rate - show even if 0
+        const br = metrics.blinkRate;
+        if (br !== undefined && br !== null) {
+            blinkRateEl.textContent = br.toFixed(1);
+        } else {
+            blinkRateEl.textContent = '0.0';
         }
 
         const fatigue = metrics.fatigueIndex || 0;
@@ -316,68 +477,106 @@ function updateUINoFace() {
     scoreProgress.style.strokeDashoffset = 283;
     scoreProgress.classList.remove('good', 'warning', 'danger');
     scoreState.textContent = 'No Face';
-    scoreState.className = 'score-state';
+    scoreState.className = 'score-state danger';
+    scoreState.style.color = '#F85149';
 }
 
-// Settings
 function showSettings() {
     chrome.storage.local.get(['settings'], (result) => {
         const settings = result.settings || {
             notificationsEnabled: true,
-            lowAttentionThreshold: 40,
+            lowAttentionThreshold: 45,
             breakReminderMinutes: 45,
             soundEnabled: false
         };
 
         const modal = document.createElement('div');
         modal.className = 'settings-modal';
-        modal.innerHTML = `
-      <div class="settings-content">
-        <div class="settings-header">
-          <h3>⚙️ Settings</h3>
-          <button class="settings-close" id="closeSettings">&times;</button>
-        </div>
-        <div class="settings-body">
-          <label class="setting-item">
-            <span>🔔 Notifications</span>
-            <input type="checkbox" id="notificationsEnabled" ${settings.notificationsEnabled ? 'checked' : ''}>
-          </label>
-          <label class="setting-item">
-            <span>🔊 Sound Alerts</span>
-            <input type="checkbox" id="soundEnabled" ${settings.soundEnabled ? 'checked' : ''}>
-          </label>
-          <label class="setting-item">
-            <span>⚠️ Alert Threshold</span>
-            <input type="number" id="lowAttentionThreshold" value="${settings.lowAttentionThreshold}" min="20" max="60">
-          </label>
-          <label class="setting-item">
-            <span>☕ Break Reminder</span>
-            <input type="number" id="breakReminderMinutes" value="${settings.breakReminderMinutes}" min="15" max="120">
-          </label>
-        </div>
-        <div class="settings-footer">
-          <button class="btn btn-primary" id="saveSettings">Save</button>
-        </div>
-      </div>
-    `;
 
-        document.body.appendChild(modal);
+        const content = document.createElement('div');
+        content.className = 'settings-content';
 
-        document.getElementById('closeSettings').addEventListener('click', () => modal.remove());
-        modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        // Header
+        const header = document.createElement('div');
+        header.className = 'settings-header';
+        const h3 = document.createElement('h3');
+        h3.textContent = '⚙️ Settings';
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'settings-close';
+        closeBtn.textContent = '×';
+        closeBtn.onclick = () => modal.remove();
+        header.appendChild(h3);
+        header.appendChild(closeBtn);
 
-        document.getElementById('saveSettings').addEventListener('click', () => {
+        // Body
+        const body = document.createElement('div');
+        body.className = 'settings-body';
+
+        // Notification toggle
+        const notifItem = createSettingItem('🔔 Notifications', 'checkbox', 'notificationsEnabled', settings.notificationsEnabled);
+        body.appendChild(notifItem);
+
+        const soundItem = createSettingItem('🔊 Sound Alerts', 'checkbox', 'soundEnabled', settings.soundEnabled);
+        body.appendChild(soundItem);
+
+        const threshItem = createSettingItem('⚠️ Alert Threshold', 'number', 'lowAttentionThreshold', settings.lowAttentionThreshold);
+        body.appendChild(threshItem);
+
+        const breakItem = createSettingItem('☕ Break Reminder (min)', 'number', 'breakReminderMinutes', settings.breakReminderMinutes);
+        body.appendChild(breakItem);
+
+        // Footer
+        const footer = document.createElement('div');
+        footer.className = 'settings-footer';
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-primary';
+        saveBtn.textContent = 'Save';
+        saveBtn.onclick = () => {
             chrome.storage.local.set({
                 settings: {
                     notificationsEnabled: document.getElementById('notificationsEnabled').checked,
                     soundEnabled: document.getElementById('soundEnabled').checked,
-                    lowAttentionThreshold: parseInt(document.getElementById('lowAttentionThreshold').value) || 40,
+                    lowAttentionThreshold: parseInt(document.getElementById('lowAttentionThreshold').value) || 45,
                     breakReminderMinutes: parseInt(document.getElementById('breakReminderMinutes').value) || 45
                 }
             });
             modal.remove();
-        });
+        };
+        footer.appendChild(saveBtn);
+
+        content.appendChild(header);
+        content.appendChild(body);
+        content.appendChild(footer);
+        modal.appendChild(content);
+
+        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+        document.body.appendChild(modal);
     });
+}
+
+function createSettingItem(label, type, id, value) {
+    const item = document.createElement('label');
+    item.className = 'setting-item';
+
+    const span = document.createElement('span');
+    span.textContent = label;
+
+    const input = document.createElement('input');
+    input.type = type;
+    input.id = id;
+
+    if (type === 'checkbox') {
+        input.checked = value;
+    } else {
+        input.value = value;
+        input.min = type === 'number' ? '20' : undefined;
+        input.max = type === 'number' ? '120' : undefined;
+    }
+
+    item.appendChild(span);
+    item.appendChild(input);
+    return item;
 }
 
 // Events
