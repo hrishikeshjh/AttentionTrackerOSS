@@ -1,7 +1,7 @@
 /**
  * CognEn Extension - Background Service Worker
- * Handles both offscreen camera (standalone) and Meet injection modes
- * Uses chrome.scripting to inject content script programmatically
+ * Uses MAIN world injection for Meet mode
+ * Also syncs localStorage to chrome.storage for popup access
  */
 
 const BADGE_COLORS = {
@@ -66,21 +66,39 @@ async function checkIfMeetTab() {
     }
 }
 
-async function injectContentScript(tabId) {
+async function startMeetTracking(tabId) {
     try {
-        // First inject the ML core library
-        await chrome.scripting.executeScript({
-            target: { tabId },
-            files: ['lib/ml-core.js']
-        });
-        console.log('[BG] Injected ml-core.js');
+        console.log('[BG] Injecting scripts into tab', tabId);
 
-        // Then inject the content script
+        // Inject ml-core.js into MAIN world
         await chrome.scripting.executeScript({
             target: { tabId },
-            files: ['content.js']
+            files: ['lib/ml-core.js'],
+            world: 'MAIN'
         });
-        console.log('[BG] Injected content.js');
+
+        // Inject content script to MAIN world
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content.js'],
+            world: 'MAIN'
+        });
+
+        console.log('[BG] Scripts injected, setting localStorage command');
+
+        // Set command in localStorage of the page
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+                localStorage.setItem('cognen_meetCommand', JSON.stringify('START'));
+                localStorage.setItem('cognen_commandTimestamp', JSON.stringify(Date.now()));
+                console.log('[CognEn] START command set in localStorage');
+            }
+        });
+
+        // Start syncing localStorage to chrome.storage
+        startDataSync(tabId);
 
         return true;
     } catch (e) {
@@ -89,33 +107,77 @@ async function injectContentScript(tabId) {
     }
 }
 
-async function startMeetTracking(tabId) {
+async function stopMeetTracking(tabId) {
     try {
-        // First inject the scripts
-        const injected = await injectContentScript(tabId);
-        if (!injected) {
-            throw new Error('Failed to inject scripts');
-        }
-
-        // Wait a bit for scripts to initialize
-        await new Promise(r => setTimeout(r, 500));
-
-        // Now send the start message
-        await chrome.tabs.sendMessage(tabId, { action: 'START_MEET_TRACKING' });
-        console.log('[BG] Meet tracking started');
-        return true;
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+                localStorage.setItem('cognen_meetCommand', JSON.stringify('STOP'));
+                localStorage.setItem('cognen_commandTimestamp', JSON.stringify(Date.now()));
+            }
+        });
+        stopDataSync();
     } catch (e) {
-        console.error('[BG] Failed to start Meet tracking:', e);
-        return false;
+        console.log('[BG] Could not send stop command');
     }
 }
 
-async function stopMeetTracking(tabId) {
-    try {
-        await chrome.tabs.sendMessage(tabId, { action: 'STOP_MEET_TRACKING' });
-    } catch (e) {
-        console.log('[BG] Could not send stop message (tab may be closed)');
+// ==================== DATA SYNC ====================
+
+let dataSyncInterval = null;
+let currentSyncTabId = null;
+
+function startDataSync(tabId) {
+    currentSyncTabId = tabId;
+    if (dataSyncInterval) clearInterval(dataSyncInterval);
+
+    dataSyncInterval = setInterval(async () => {
+        if (!currentSyncTabId) return;
+
+        try {
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: currentSyncTabId },
+                world: 'MAIN',
+                func: () => {
+                    try {
+                        const detection = localStorage.getItem('cognen_lastDetection');
+                        return detection ? JSON.parse(detection) : null;
+                    } catch (e) {
+                        return null;
+                    }
+                }
+            });
+
+            if (results && results[0] && results[0].result) {
+                const detection = results[0].result;
+                await chrome.storage.local.set({ lastDetection: detection });
+
+                // Update badge
+                if (detection.prediction && detection.prediction.rawScore) {
+                    const score = detection.prediction.rawScore;
+                    chrome.action.setBadgeText({ text: String(score) });
+
+                    let color;
+                    if (score >= 70) color = BADGE_COLORS.high;
+                    else if (score >= 40) color = BADGE_COLORS.medium;
+                    else color = BADGE_COLORS.low;
+                    chrome.action.setBadgeBackgroundColor({ color });
+                }
+            }
+        } catch (e) {
+            // Tab might be closed
+            stopDataSync();
+        }
+    }, 500);
+}
+
+function stopDataSync() {
+    if (dataSyncInterval) {
+        clearInterval(dataSyncInterval);
+        dataSyncInterval = null;
     }
+    currentSyncTabId = null;
 }
 
 // ==================== MESSAGE HANDLING ====================
@@ -142,7 +204,6 @@ async function handlePopupMessage(message, sendResponse) {
                 const meetInfo = await checkIfMeetTab();
 
                 if (meetInfo.isMeet && meetInfo.tabId) {
-                    // Meet mode: inject into page
                     console.log('[BG] Starting Meet mode on tab', meetInfo.tabId);
                     const success = await startMeetTracking(meetInfo.tabId);
 
@@ -153,12 +214,15 @@ async function handlePopupMessage(message, sendResponse) {
                     await chrome.storage.local.set({
                         sessionMode: 'meet',
                         sessionTabId: meetInfo.tabId,
-                        cameraRunning: true
+                        cameraRunning: true,
+                        sessionActive: true
                     });
+
+                    chrome.action.setBadgeText({ text: '...' });
+                    chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.medium });
 
                     sendResponse({ success: true, mode: 'meet' });
                 } else {
-                    // Standalone mode: use offscreen document
                     console.log('[BG] Starting standalone mode');
                     const created = await createOffscreenDocument();
 
@@ -170,18 +234,20 @@ async function handlePopupMessage(message, sendResponse) {
                             await new Promise(r => setTimeout(r, 1000));
                             try {
                                 await chrome.runtime.sendMessage({ type: 'START_CAMERA' });
-                            } catch (e2) {
-                                console.log('[BG] Could not send START_CAMERA');
-                            }
+                            } catch (e2) { }
                         }
                     }
 
-                    await chrome.storage.local.set({ sessionMode: 'standalone' });
+                    await chrome.storage.local.set({
+                        sessionMode: 'standalone',
+                        sessionActive: true
+                    });
+
+                    chrome.action.setBadgeText({ text: '...' });
+                    chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.medium });
+
                     sendResponse({ success: created, mode: 'standalone' });
                 }
-
-                chrome.action.setBadgeText({ text: '...' });
-                chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.medium });
 
             } catch (error) {
                 console.error('[BG] START_SESSION error:', error);
@@ -202,6 +268,8 @@ async function handlePopupMessage(message, sendResponse) {
                     await closeOffscreenDocument();
                 }
 
+                stopDataSync();
+
                 await chrome.storage.local.set({
                     cameraRunning: false,
                     sessionActive: false,
@@ -215,33 +283,10 @@ async function handlePopupMessage(message, sendResponse) {
             }
             break;
 
-        case 'RESET_ML':
-            try {
-                await chrome.runtime.sendMessage({ type: 'RESET_ML' });
-            } catch (e) { }
-            sendResponse({ success: true });
-            break;
-
         default:
             sendResponse({ success: false, error: 'Unknown action' });
     }
 }
-
-// ==================== BADGE UPDATES ====================
-
-setInterval(async () => {
-    const data = await chrome.storage.local.get(['lastDetection', 'sessionActive']);
-    if (data.sessionActive && data.lastDetection?.prediction?.rawScore) {
-        const score = data.lastDetection.prediction.rawScore;
-        chrome.action.setBadgeText({ text: String(score) });
-
-        let color;
-        if (score >= 70) color = BADGE_COLORS.high;
-        else if (score >= 40) color = BADGE_COLORS.medium;
-        else color = BADGE_COLORS.low;
-        chrome.action.setBadgeBackgroundColor({ color });
-    }
-}, 2000);
 
 // ==================== INITIALIZATION ====================
 

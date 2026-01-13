@@ -1,29 +1,61 @@
 /**
  * CognEn Extension - Meet Analyzer Content Script
- * Injects into Google Meet and analyzes the existing self-view video
- * No additional camera access needed - uses Meet's existing stream
+ * Runs in MAIN world to access ML classes
+ * Uses chrome.storage polling for commands (MAIN world can't use message passing)
  */
 
-console.log('[CognEn] Content script injected on:', window.location.href);
+(function () {
+  'use strict';
 
-// Prevent duplicate injection
-if (window.__cognEnInjected) {
-  console.log('[CognEn] Already injected, skipping');
-} else {
+  console.log('[CognEn] Content script loaded in MAIN world');
+
+  // Prevent duplicate injection
+  if (window.__cognEnInjected) {
+    console.log('[CognEn] Already injected');
+    return;
+  }
   window.__cognEnInjected = true;
 
   // State
   let isTracking = false;
   let selfVideoElement = null;
   let analysisInterval = null;
+  let commandPollInterval = null;
   let canvas = null;
   let ctx = null;
   let faceApiLoaded = false;
   let metricsAggregator = null;
   let mlEngine = null;
   let widget = null;
+  let lastCommandTimestamp = 0;
 
-  // Create hidden canvas for frame capture
+  // Simple storage wrapper (works in MAIN world via window.postMessage bridge)
+  const storage = {
+    async get(keys) {
+      return new Promise(resolve => {
+        // Use localStorage as a bridge
+        try {
+          const data = {};
+          keys.forEach(key => {
+            const val = localStorage.getItem('cognen_' + key);
+            if (val) data[key] = JSON.parse(val);
+          });
+          resolve(data);
+        } catch (e) {
+          resolve({});
+        }
+      });
+    },
+    async set(data) {
+      try {
+        Object.entries(data).forEach(([key, val]) => {
+          localStorage.setItem('cognen_' + key, JSON.stringify(val));
+        });
+      } catch (e) { }
+    }
+  };
+
+  // Create canvas
   function createCanvas() {
     if (canvas) return;
     canvas = document.createElement('canvas');
@@ -34,38 +66,30 @@ if (window.__cognEnInjected) {
     ctx = canvas.getContext('2d');
   }
 
-  // Find self-view video element
+  // Find self-view video
   function findSelfVideo() {
-    // Get all video elements
     const videos = document.querySelectorAll('video');
+    console.log('[CognEn] Found', videos.length, 'video elements');
 
     for (const video of videos) {
-      if (video.videoWidth > 0 && video.videoHeight > 0 && !video.paused) {
+      if (video.videoWidth > 0 && !video.paused) {
         const rect = video.getBoundingClientRect();
-        // Self-view is usually smaller (< 300px wide) or there's only one video
-        if (rect.width > 0 && (rect.width < 400 || videos.length <= 2)) {
-          console.log('[CognEn] Found video:', rect.width, 'x', rect.height);
+        console.log('[CognEn] Video:', rect.width, 'x', rect.height, 'playing:', !video.paused);
+        if (rect.width > 0) {
           return video;
         }
       }
     }
-
-    // Fallback: just get first playing video
-    for (const video of videos) {
-      if (video.videoWidth > 0 && !video.paused) {
-        return video;
-      }
-    }
-
     return null;
   }
 
-  // Load face-api.js dynamically
+  // Load face-api
   async function loadFaceApi() {
-    if (faceApiLoaded) return true;
-    if (typeof faceapi !== 'undefined') {
-      faceApiLoaded = true;
-      return true;
+    if (faceApiLoaded || typeof faceapi !== 'undefined') {
+      if (typeof faceapi !== 'undefined') {
+        faceApiLoaded = true;
+        return true;
+      }
     }
 
     return new Promise((resolve) => {
@@ -73,14 +97,12 @@ if (window.__cognEnInjected) {
       const script = document.createElement('script');
       script.src = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.min.js';
       script.onload = async () => {
-        console.log('[CognEn] face-api.js loaded');
+        console.log('[CognEn] face-api loaded, loading models...');
         try {
           const modelUrl = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
-          await Promise.all([
-            faceapi.nets.tinyFaceDetector.loadFromUri(modelUrl),
-            faceapi.nets.faceLandmark68Net.loadFromUri(modelUrl),
-          ]);
-          console.log('[CognEn] Face models loaded');
+          await faceapi.nets.tinyFaceDetector.loadFromUri(modelUrl);
+          await faceapi.nets.faceLandmark68Net.loadFromUri(modelUrl);
+          console.log('[CognEn] Models loaded!');
           faceApiLoaded = true;
           resolve(true);
         } catch (e) {
@@ -88,29 +110,35 @@ if (window.__cognEnInjected) {
           resolve(false);
         }
       };
-      script.onerror = () => resolve(false);
+      script.onerror = (e) => {
+        console.error('[CognEn] face-api load error:', e);
+        resolve(false);
+      };
       document.head.appendChild(script);
     });
   }
 
-  // Initialize ML components (from ml-core.js injected earlier)
-  function initMLComponents() {
+  // Init ML
+  function initML() {
+    console.log('[CognEn] Checking ML components...');
+    console.log('[CognEn] FaceMetricsAggregator:', typeof FaceMetricsAggregator);
+    console.log('[CognEn] MLEngine:', typeof MLEngine);
+
     if (typeof FaceMetricsAggregator !== 'undefined') {
       metricsAggregator = new FaceMetricsAggregator();
-      console.log('[CognEn] FaceMetricsAggregator ready');
+      console.log('[CognEn] Created FaceMetricsAggregator');
     }
     if (typeof MLEngine !== 'undefined') {
       mlEngine = new MLEngine();
-      console.log('[CognEn] MLEngine ready');
+      console.log('[CognEn] Created MLEngine');
     }
     return !!(metricsAggregator && mlEngine);
   }
 
-  // Analyze a single frame
+  // Analyze frame
   async function analyzeFrame() {
     if (!selfVideoElement || !faceApiLoaded || !ctx) return null;
 
-    // Re-check video element
     if (selfVideoElement.paused || selfVideoElement.videoWidth === 0) {
       selfVideoElement = findSelfVideo();
       if (!selfVideoElement) return null;
@@ -123,18 +151,18 @@ if (window.__cognEnInjected) {
         .detectAllFaces(canvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
         .withFaceLandmarks();
 
-      if (detections && detections.length > 0 && metricsAggregator && mlEngine) {
+      if (detections && detections.length > 0) {
         const landmarks = detections[0].landmarks.positions;
         const timestamp = Date.now();
 
-        const metrics = metricsAggregator.calculateExtendedMetrics(
-          landmarks, canvas.width, canvas.height, timestamp
-        );
-
-        const prediction = mlEngine.predict(metrics);
-        return { prediction, metrics, hasFace: true };
+        if (metricsAggregator && mlEngine) {
+          const metrics = metricsAggregator.calculateExtendedMetrics(
+            landmarks, canvas.width, canvas.height, timestamp
+          );
+          const prediction = mlEngine.predict(metrics);
+          return { prediction, metrics, hasFace: true };
+        }
       }
-
       return { hasFace: false };
     } catch (e) {
       console.error('[CognEn] Analysis error:', e);
@@ -142,7 +170,7 @@ if (window.__cognEnInjected) {
     }
   }
 
-  // Create floating widget
+  // Create widget
   function createWidget() {
     if (document.getElementById('cognen-widget')) return;
 
@@ -154,68 +182,68 @@ if (window.__cognEnInjected) {
           position: fixed;
           bottom: 20px;
           right: 20px;
-          z-index: 999999;
+          z-index: 2147483647;
           font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-          background: rgba(13, 17, 23, 0.95);
-          border: 1px solid rgba(0, 255, 255, 0.3);
-          border-radius: 12px;
-          padding: 12px 16px;
-          min-width: 120px;
-          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
-          backdrop-filter: blur(10px);
+          background: linear-gradient(135deg, rgba(13, 17, 23, 0.98), rgba(22, 27, 34, 0.98));
+          border: 2px solid rgba(0, 255, 255, 0.4);
+          border-radius: 16px;
+          padding: 16px 20px;
+          min-width: 140px;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 20px rgba(0, 255, 255, 0.2);
         }
         .cognen-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 8px;
+          margin-bottom: 12px;
           color: #00FFFF;
-          font-size: 11px;
-          font-weight: 600;
+          font-size: 12px;
+          font-weight: 700;
         }
         .cognen-close {
           background: none;
           border: none;
           color: #8B949E;
           cursor: pointer;
-          font-size: 14px;
-          padding: 0;
+          font-size: 16px;
+          padding: 0 4px;
         }
         .cognen-close:hover { color: #F85149; }
         .cognen-score {
-          font-size: 42px;
-          font-weight: 700;
+          font-size: 52px;
+          font-weight: 800;
           text-align: center;
           color: #00FF99;
           line-height: 1;
+          text-shadow: 0 0 20px rgba(0, 255, 153, 0.5);
         }
-        .cognen-score.warning { color: #FFA657; }
-        .cognen-score.danger { color: #F85149; }
+        .cognen-score.warning { color: #FFA657; text-shadow: 0 0 20px rgba(255, 166, 87, 0.5); }
+        .cognen-score.danger { color: #F85149; text-shadow: 0 0 20px rgba(248, 81, 73, 0.5); }
         .cognen-state {
-          font-size: 10px;
+          font-size: 11px;
           text-align: center;
           color: #8B949E;
           text-transform: uppercase;
-          margin-top: 4px;
+          letter-spacing: 1px;
+          margin-top: 6px;
         }
         .cognen-stats {
           display: flex;
-          justify-content: space-between;
-          margin-top: 8px;
-          padding-top: 8px;
+          justify-content: space-around;
+          margin-top: 12px;
+          padding-top: 12px;
           border-top: 1px solid rgba(255,255,255,0.1);
-          gap: 12px;
         }
         .cognen-stat { text-align: center; }
-        .cognen-stat-value { font-size: 14px; font-weight: 600; color: #F0F6FC; }
-        .cognen-stat-label { font-size: 8px; color: #6E7681; text-transform: uppercase; }
+        .cognen-stat-value { font-size: 16px; font-weight: 700; color: #F0F6FC; }
+        .cognen-stat-label { font-size: 9px; color: #6E7681; text-transform: uppercase; margin-top: 2px; }
       </style>
       <div class="cognen-header">
         <span>👁 CognEn</span>
-        <button class="cognen-close" id="cognen-close">✕</button>
+        <button class="cognen-close" id="cognen-close" title="Stop tracking">✕</button>
       </div>
       <div class="cognen-score" id="cognen-score">--</div>
-      <div class="cognen-state" id="cognen-state">Starting...</div>
+      <div class="cognen-state" id="cognen-state">Initializing...</div>
       <div class="cognen-stats">
         <div class="cognen-stat">
           <div class="cognen-stat-value" id="cognen-blink">-</div>
@@ -230,13 +258,13 @@ if (window.__cognEnInjected) {
 
     document.body.appendChild(widget);
 
-    document.getElementById('cognen-close').addEventListener('click', () => {
+    document.getElementById('cognen-close').onclick = () => {
       stopTracking();
-      chrome.runtime.sendMessage({ action: 'STOP_SESSION' });
-    });
+      storage.set({ meetCommand: 'STOPPED' });
+    };
   }
 
-  // Update widget display
+  // Update widget
   function updateWidget(result) {
     const scoreEl = document.getElementById('cognen-score');
     const stateEl = document.getElementById('cognen-state');
@@ -261,36 +289,38 @@ if (window.__cognEnInjected) {
       }
     } else {
       scoreEl.textContent = '--';
-      stateEl.textContent = 'No Face';
+      stateEl.textContent = result ? 'No Face Detected' : 'Processing...';
     }
   }
 
   // Start tracking
   async function startTracking() {
+    if (isTracking) return;
+
     console.log('[CognEn] Starting tracking...');
 
     // Find video
     selfVideoElement = findSelfVideo();
     if (!selfVideoElement) {
-      console.log('[CognEn] No video found, retrying in 2s...');
+      console.log('[CognEn] No video found, retrying in 2s');
       setTimeout(startTracking, 2000);
       return;
     }
+    console.log('[CognEn] Found video element');
 
     // Create canvas
     createCanvas();
 
-    // Init ML components
-    const mlReady = initMLComponents();
-    if (!mlReady) {
-      console.error('[CognEn] ML components not ready');
-    }
+    // Init ML
+    const mlOk = initML();
+    console.log('[CognEn] ML init:', mlOk);
 
     // Load face-api
-    const faceLoaded = await loadFaceApi();
-    if (!faceLoaded) {
+    const faceOk = await loadFaceApi();
+    console.log('[CognEn] Face-api ready:', faceOk);
+
+    if (!faceOk) {
       console.error('[CognEn] Failed to load face-api');
-      chrome.storage.local.set({ cameraError: 'Failed to load ML models' });
       return;
     }
 
@@ -298,9 +328,9 @@ if (window.__cognEnInjected) {
     createWidget();
 
     isTracking = true;
-    chrome.storage.local.set({ cameraRunning: true });
+    storage.set({ cameraRunning: true });
 
-    // Start analysis loop
+    // Analysis loop
     let frameCount = 0;
     analysisInterval = setInterval(async () => {
       if (!isTracking) return;
@@ -308,12 +338,11 @@ if (window.__cognEnInjected) {
       const result = await analyzeFrame();
       frameCount++;
 
-      if (result) {
-        // Update widget
-        updateWidget(result);
+      updateWidget(result);
 
-        // Store for popup
-        chrome.storage.local.set({
+      // Also store in localStorage so popup can read
+      if (result) {
+        storage.set({
           lastDetection: {
             timestamp: Date.now(),
             hasFace: result.hasFace,
@@ -331,14 +360,18 @@ if (window.__cognEnInjected) {
           }
         });
       }
+
+      if (frameCount % 30 === 0) {
+        console.log('[CognEn] Frame', frameCount, '| Score:', result?.prediction?.rawScore || '--');
+      }
     }, 200);
 
-    console.log('[CognEn] Tracking started');
+    console.log('[CognEn] Tracking started!');
   }
 
   // Stop tracking
   function stopTracking() {
-    console.log('[CognEn] Stopping tracking...');
+    console.log('[CognEn] Stopping...');
     isTracking = false;
 
     if (analysisInterval) {
@@ -351,25 +384,41 @@ if (window.__cognEnInjected) {
       widget = null;
     }
 
-    chrome.storage.local.set({ cameraRunning: false });
+    storage.set({ cameraRunning: false });
   }
 
-  // Message handler
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('[CognEn] Received:', message);
+  // Poll for commands from background
+  function startCommandPolling() {
+    commandPollInterval = setInterval(async () => {
+      const data = await storage.get(['meetCommand', 'commandTimestamp']);
 
-    if (message.action === 'START_MEET_TRACKING') {
+      if (data.commandTimestamp && data.commandTimestamp > lastCommandTimestamp) {
+        lastCommandTimestamp = data.commandTimestamp;
+
+        if (data.meetCommand === 'START' && !isTracking) {
+          console.log('[CognEn] Received START command');
+          startTracking();
+        } else if (data.meetCommand === 'STOP' && isTracking) {
+          console.log('[CognEn] Received STOP command');
+          stopTracking();
+        }
+      }
+    }, 500);
+  }
+
+  // Auto-start if we're on a Meet page
+  console.log('[CognEn] Checking for START command...');
+
+  // Start polling and also check immediately
+  startCommandPolling();
+
+  // Check for immediate start command
+  setTimeout(async () => {
+    const data = await storage.get(['meetCommand']);
+    if (data.meetCommand === 'START') {
+      console.log('[CognEn] Found START command, starting...');
       startTracking();
-      sendResponse({ success: true });
     }
+  }, 500);
 
-    if (message.action === 'STOP_MEET_TRACKING') {
-      stopTracking();
-      sendResponse({ success: true });
-    }
-
-    return true;
-  });
-
-  console.log('[CognEn] Content script ready');
-}
+})();
