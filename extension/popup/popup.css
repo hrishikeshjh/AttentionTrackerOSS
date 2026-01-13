@@ -505,3 +505,31 @@ body {
   flex: initial;
   padding: 8px 20px;
 }
+
+/* Large button */
+.btn-large {
+  padding: 16px 24px;
+  font-size: 16px;
+}
+
+/* Pulse animation for active tracking */
+.pulse-ring {
+  width: 60px;
+  height: 60px;
+  border: 3px solid var(--accent-green);
+  border-radius: 50%;
+  margin: 0 auto 8px;
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}

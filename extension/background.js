@@ -1,20 +1,14 @@
 /**
  * CognEn Extension - Background Service Worker
- * Handles offscreen document management, badge updates, and notifications
- * Keeps offscreen document alive even when popup is closed
+ * Handles both offscreen camera (standalone) and Meet injection modes
  */
 
-// Badge colors
 const BADGE_COLORS = {
     high: '#3FB950',
     medium: '#FFA657',
     low: '#F85149',
     inactive: '#6E7681'
 };
-
-// State
-let currentScore = 0;
-let sessionActive = false;
 
 // ==================== OFFSCREEN DOCUMENT MANAGEMENT ====================
 
@@ -25,27 +19,22 @@ async function hasOffscreenDocument() {
         });
         return contexts.length > 0;
     } catch (e) {
-        console.error('Error checking offscreen document:', e);
         return false;
     }
 }
 
 async function createOffscreenDocument() {
-    if (await hasOffscreenDocument()) {
-        console.log('Offscreen document already exists');
-        return true;
-    }
+    if (await hasOffscreenDocument()) return true;
 
     try {
         await chrome.offscreen.createDocument({
             url: 'offscreen.html',
             reasons: ['USER_MEDIA'],
-            justification: 'Camera access for face detection and attention tracking'
+            justification: 'Camera access for face detection'
         });
-        console.log('Offscreen document created successfully');
         return true;
     } catch (error) {
-        console.error('Failed to create offscreen document:', error);
+        console.error('[BG] Failed to create offscreen:', error);
         return false;
     }
 }
@@ -54,151 +43,169 @@ async function closeOffscreenDocument() {
     if (await hasOffscreenDocument()) {
         try {
             await chrome.offscreen.closeDocument();
-            console.log('Offscreen document closed');
-        } catch (error) {
-            console.error('Failed to close offscreen document:', error);
-        }
+        } catch (e) { }
     }
+}
+
+// ==================== MEET DETECTION ====================
+
+async function checkIfMeetTab() {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab) return { isMeet: false };
+
+        const url = tab.url || '';
+        const isMeet = url.includes('meet.google.com') ||
+            url.includes('zoom.us') ||
+            url.includes('teams.microsoft.com');
+
+        return { isMeet, tabId: tab.id, url };
+    } catch (e) {
+        return { isMeet: false };
+    }
+}
+
+async function startMeetTracking(tabId) {
+    try {
+        await chrome.tabs.sendMessage(tabId, { action: 'START_MEET_TRACKING' });
+        return true;
+    } catch (e) {
+        console.error('[BG] Failed to start Meet tracking:', e);
+        return false;
+    }
+}
+
+async function stopMeetTracking(tabId) {
+    try {
+        await chrome.tabs.sendMessage(tabId, { action: 'STOP_MEET_TRACKING' });
+    } catch (e) { }
 }
 
 // ==================== MESSAGE HANDLING ====================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    handleMessage(message, sender, sendResponse);
-    return true; // Keep channel open for async response
+    if (message.action) {
+        handlePopupMessage(message, sendResponse);
+        return true;
+    }
+    return false;
 });
 
-async function handleMessage(message, sender, sendResponse) {
-    console.log('Background received message:', message.type);
+async function handlePopupMessage(message, sendResponse) {
+    console.log('[BG] Action:', message.action);
 
-    switch (message.type) {
-        case 'START_CAMERA_REQUEST':
+    switch (message.action) {
+        case 'CHECK_MODE':
+            // Check if we're on a Meet tab
+            const meetCheck = await checkIfMeetTab();
+            sendResponse(meetCheck);
+            break;
+
+        case 'START_SESSION':
             try {
-                const created = await createOffscreenDocument();
-                if (created) {
-                    // Wait for offscreen to be ready, then start camera
-                    setTimeout(async () => {
+                const meetInfo = await checkIfMeetTab();
+
+                if (meetInfo.isMeet && meetInfo.tabId) {
+                    // Meet mode: inject into page
+                    console.log('[BG] Starting Meet mode');
+                    const success = await startMeetTracking(meetInfo.tabId);
+
+                    await chrome.storage.local.set({
+                        sessionMode: 'meet',
+                        sessionTabId: meetInfo.tabId,
+                        cameraRunning: success
+                    });
+
+                    sendResponse({ success, mode: 'meet' });
+                } else {
+                    // Standalone mode: use offscreen document
+                    console.log('[BG] Starting standalone mode');
+                    const created = await createOffscreenDocument();
+
+                    if (created) {
+                        await new Promise(r => setTimeout(r, 1500));
                         try {
                             await chrome.runtime.sendMessage({ type: 'START_CAMERA' });
-                            console.log('START_CAMERA message sent to offscreen');
                         } catch (e) {
-                            console.log('Could not send START_CAMERA, offscreen may still be loading');
+                            await new Promise(r => setTimeout(r, 1000));
+                            await chrome.runtime.sendMessage({ type: 'START_CAMERA' });
                         }
-                    }, 1500);
-                    sendResponse({ success: true });
-                } else {
-                    sendResponse({ success: false, error: 'Failed to create offscreen document' });
+                    }
+
+                    await chrome.storage.local.set({ sessionMode: 'standalone' });
+                    sendResponse({ success: created, mode: 'standalone' });
                 }
+
+                chrome.action.setBadgeText({ text: '...' });
+                chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.medium });
+
             } catch (error) {
                 sendResponse({ success: false, error: error.message });
             }
             break;
 
-        case 'STOP_CAMERA_REQUEST':
+        case 'STOP_SESSION':
             try {
-                await chrome.runtime.sendMessage({ type: 'STOP_CAMERA' });
-            } catch (e) {
-                console.log('Could not send STOP_CAMERA');
-            }
-            // DON'T close offscreen document - keep it alive
-            // Only close when explicitly stopping session
-            await closeOffscreenDocument();
-            chrome.storage.local.set({ cameraRunning: false });
-            sendResponse({ success: true });
-            break;
+                const state = await chrome.storage.local.get(['sessionMode', 'sessionTabId']);
 
-        case 'SESSION_START':
-            sessionActive = true;
-            chrome.storage.local.set({ sessionActive: true });
-            chrome.action.setBadgeText({ text: '...' });
-            chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.medium });
-            break;
+                if (state.sessionMode === 'meet' && state.sessionTabId) {
+                    await stopMeetTracking(state.sessionTabId);
+                } else {
+                    try {
+                        await chrome.runtime.sendMessage({ type: 'STOP_CAMERA' });
+                    } catch (e) { }
+                    await closeOffscreenDocument();
+                }
 
-        case 'SESSION_END':
-            sessionActive = false;
-            chrome.storage.local.set({ sessionActive: false });
-            chrome.action.setBadgeText({ text: '' });
+                await chrome.storage.local.set({
+                    cameraRunning: false,
+                    sessionActive: false,
+                    sessionMode: null
+                });
 
-            if (message.data && message.data.avgScore) {
-                showNotification(
-                    'Session Complete',
-                    `Average attention score: ${message.data.avgScore}%`,
-                    'session_end'
-                );
-            }
-            break;
-
-        case 'UPDATE_SCORE':
-            if (message.data && typeof message.data.score === 'number') {
-                updateBadge(message.data.score);
+                chrome.action.setBadgeText({ text: '' });
+                sendResponse({ success: true });
+            } catch (error) {
+                sendResponse({ success: false, error: error.message });
             }
             break;
 
         case 'RESET_ML':
             try {
                 await chrome.runtime.sendMessage({ type: 'RESET_ML' });
-            } catch (e) {
-                console.log('Could not send RESET_ML');
-            }
+            } catch (e) { }
+            sendResponse({ success: true });
             break;
 
-        case 'GET_STATE':
-            const hasOffscreen = await hasOffscreenDocument();
-            sendResponse({
-                sessionActive,
-                currentScore,
-                hasOffscreen
-            });
-            break;
+        default:
+            sendResponse({ success: false, error: 'Unknown action' });
     }
 }
 
 // ==================== BADGE UPDATES ====================
 
-function updateBadge(score) {
-    currentScore = score;
+setInterval(async () => {
+    const data = await chrome.storage.local.get(['lastDetection', 'sessionActive']);
+    if (data.sessionActive && data.lastDetection?.prediction?.rawScore) {
+        const score = data.lastDetection.prediction.rawScore;
+        chrome.action.setBadgeText({ text: String(score) });
 
-    chrome.action.setBadgeText({ text: String(score) });
-
-    let color;
-    if (score >= 70) {
-        color = BADGE_COLORS.high;
-    } else if (score >= 40) {
-        color = BADGE_COLORS.medium;
-    } else {
-        color = BADGE_COLORS.low;
+        let color;
+        if (score >= 70) color = BADGE_COLORS.high;
+        else if (score >= 40) color = BADGE_COLORS.medium;
+        else color = BADGE_COLORS.low;
+        chrome.action.setBadgeBackgroundColor({ color });
     }
-    chrome.action.setBadgeBackgroundColor({ color });
-}
-
-// ==================== NOTIFICATIONS ====================
-
-async function showNotification(title, message, id) {
-    const result = await chrome.storage.local.get('settings');
-    const settings = result.settings || {};
-
-    if (settings.notificationsEnabled === false) return;
-
-    chrome.notifications.create(id, {
-        type: 'basic',
-        iconUrl: 'icons/icon128.png',
-        title: title,
-        message: message,
-        priority: 1
-    });
-}
+}, 2000);
 
 // ==================== INITIALIZATION ====================
 
 chrome.runtime.onInstalled.addListener(() => {
-    console.log('CognEn Extension installed');
-
-    chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.inactive });
     chrome.action.setBadgeText({ text: '' });
-
     chrome.storage.local.set({
         sessionActive: false,
         cameraRunning: false,
+        sessionMode: null,
         settings: {
             notificationsEnabled: true,
             soundEnabled: false,
@@ -208,17 +215,4 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
-// Handle notification clicks
-chrome.notifications.onClicked.addListener((notificationId) => {
-    chrome.notifications.clear(notificationId);
-});
-
-// Keep alive - periodically check storage for updates
-setInterval(async () => {
-    const data = await chrome.storage.local.get(['lastDetection', 'sessionActive']);
-    if (data.sessionActive && data.lastDetection && data.lastDetection.prediction) {
-        updateBadge(data.lastDetection.prediction.rawScore);
-    }
-}, 1000);
-
-console.log('CognEn background service worker initialized');
+console.log('[BG] Background ready');
