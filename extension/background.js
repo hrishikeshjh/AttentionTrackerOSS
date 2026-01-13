@@ -1,6 +1,7 @@
 /**
  * CognEn Extension - Background Service Worker
  * Handles offscreen document management, badge updates, and notifications
+ * Keeps offscreen document alive even when popup is closed
  */
 
 // Badge colors
@@ -14,20 +15,25 @@ const BADGE_COLORS = {
 // State
 let currentScore = 0;
 let sessionActive = false;
-let offscreenDocumentCreated = false;
 
 // ==================== OFFSCREEN DOCUMENT MANAGEMENT ====================
 
 async function hasOffscreenDocument() {
-    const contexts = await chrome.runtime.getContexts({
-        contextTypes: ['OFFSCREEN_DOCUMENT']
-    });
-    return contexts.length > 0;
+    try {
+        const contexts = await chrome.runtime.getContexts({
+            contextTypes: ['OFFSCREEN_DOCUMENT']
+        });
+        return contexts.length > 0;
+    } catch (e) {
+        console.error('Error checking offscreen document:', e);
+        return false;
+    }
 }
 
 async function createOffscreenDocument() {
     if (await hasOffscreenDocument()) {
-        return;
+        console.log('Offscreen document already exists');
+        return true;
     }
 
     try {
@@ -36,11 +42,11 @@ async function createOffscreenDocument() {
             reasons: ['USER_MEDIA'],
             justification: 'Camera access for face detection and attention tracking'
         });
-        offscreenDocumentCreated = true;
-        console.log('Offscreen document created');
+        console.log('Offscreen document created successfully');
+        return true;
     } catch (error) {
         console.error('Failed to create offscreen document:', error);
-        throw error;
+        return false;
     }
 }
 
@@ -48,7 +54,6 @@ async function closeOffscreenDocument() {
     if (await hasOffscreenDocument()) {
         try {
             await chrome.offscreen.closeDocument();
-            offscreenDocumentCreated = false;
             console.log('Offscreen document closed');
         } catch (error) {
             console.error('Failed to close offscreen document:', error);
@@ -64,64 +69,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleMessage(message, sender, sendResponse) {
+    console.log('Background received message:', message.type);
+
     switch (message.type) {
         case 'START_CAMERA_REQUEST':
             try {
-                await createOffscreenDocument();
-                // Wait a bit for the offscreen document to initialize
-                setTimeout(() => {
-                    chrome.runtime.sendMessage({ type: 'START_CAMERA' });
-                }, 1000);
-                sendResponse({ success: true });
+                const created = await createOffscreenDocument();
+                if (created) {
+                    // Wait for offscreen to be ready, then start camera
+                    setTimeout(async () => {
+                        try {
+                            await chrome.runtime.sendMessage({ type: 'START_CAMERA' });
+                            console.log('START_CAMERA message sent to offscreen');
+                        } catch (e) {
+                            console.log('Could not send START_CAMERA, offscreen may still be loading');
+                        }
+                    }, 1500);
+                    sendResponse({ success: true });
+                } else {
+                    sendResponse({ success: false, error: 'Failed to create offscreen document' });
+                }
             } catch (error) {
                 sendResponse({ success: false, error: error.message });
             }
             break;
 
         case 'STOP_CAMERA_REQUEST':
-            chrome.runtime.sendMessage({ type: 'STOP_CAMERA' });
-            setTimeout(() => {
-                closeOffscreenDocument();
-            }, 500);
-            sendResponse({ success: true });
-            break;
-
-        case 'OFFSCREEN_READY':
-            console.log('Offscreen document ready');
-            break;
-
-        case 'OFFSCREEN_ERROR':
-            console.error('Offscreen error:', message.error);
-            break;
-
-        case 'CAMERA_STARTED':
-            console.log('Camera started in offscreen document');
-            break;
-
-        case 'CAMERA_STOPPED':
-            console.log('Camera stopped');
-            break;
-
-        case 'CAMERA_ERROR':
-            console.error('Camera error:', message.error);
-            break;
-
-        case 'DETECTION_RESULT':
-            // Forward detection results to popup if open
-            // Also update badge
-            if (message.data && message.data.prediction) {
-                updateBadge(message.data.prediction.rawScore);
+            try {
+                await chrome.runtime.sendMessage({ type: 'STOP_CAMERA' });
+            } catch (e) {
+                console.log('Could not send STOP_CAMERA');
             }
+            // DON'T close offscreen document - keep it alive
+            // Only close when explicitly stopping session
+            await closeOffscreenDocument();
+            chrome.storage.local.set({ cameraRunning: false });
+            sendResponse({ success: true });
             break;
 
         case 'SESSION_START':
             sessionActive = true;
+            chrome.storage.local.set({ sessionActive: true });
             chrome.action.setBadgeText({ text: '...' });
             chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.medium });
             break;
 
         case 'SESSION_END':
             sessionActive = false;
+            chrome.storage.local.set({ sessionActive: false });
             chrome.action.setBadgeText({ text: '' });
 
             if (message.data && message.data.avgScore) {
@@ -139,8 +134,21 @@ async function handleMessage(message, sender, sendResponse) {
             }
             break;
 
+        case 'RESET_ML':
+            try {
+                await chrome.runtime.sendMessage({ type: 'RESET_ML' });
+            } catch (e) {
+                console.log('Could not send RESET_ML');
+            }
+            break;
+
         case 'GET_STATE':
-            sendResponse({ sessionActive, currentScore, offscreenDocumentCreated });
+            const hasOffscreen = await hasOffscreenDocument();
+            sendResponse({
+                sessionActive,
+                currentScore,
+                hasOffscreen
+            });
             break;
     }
 }
@@ -166,9 +174,10 @@ function updateBadge(score) {
 // ==================== NOTIFICATIONS ====================
 
 async function showNotification(title, message, id) {
-    const { settings } = await chrome.storage.local.get('settings');
+    const result = await chrome.storage.local.get('settings');
+    const settings = result.settings || {};
 
-    if (settings && !settings.notificationsEnabled) return;
+    if (settings.notificationsEnabled === false) return;
 
     chrome.notifications.create(id, {
         type: 'basic',
@@ -189,11 +198,12 @@ chrome.runtime.onInstalled.addListener(() => {
 
     chrome.storage.local.set({
         sessionActive: false,
+        cameraRunning: false,
         settings: {
             notificationsEnabled: true,
-            multitaskAlerts: true,
-            fatigueAlerts: true,
+            soundEnabled: false,
             lowAttentionThreshold: 40,
+            breakReminderMinutes: 45
         }
     });
 });
@@ -202,5 +212,13 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.notifications.onClicked.addListener((notificationId) => {
     chrome.notifications.clear(notificationId);
 });
+
+// Keep alive - periodically check storage for updates
+setInterval(async () => {
+    const data = await chrome.storage.local.get(['lastDetection', 'sessionActive']);
+    if (data.sessionActive && data.lastDetection && data.lastDetection.prediction) {
+        updateBadge(data.lastDetection.prediction.rawScore);
+    }
+}, 1000);
 
 console.log('CognEn background service worker initialized');
