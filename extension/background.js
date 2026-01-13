@@ -1,7 +1,6 @@
 /**
  * CognEn Extension - Background Service Worker
- * Uses MAIN world injection for Meet mode
- * Also syncs localStorage to chrome.storage for popup access
+ * Injects ALL scripts from extension files to avoid Trusted Types errors
  */
 
 const BADGE_COLORS = {
@@ -70,34 +69,45 @@ async function startMeetTracking(tabId) {
     try {
         console.log('[BG] Injecting scripts into tab', tabId);
 
-        // Inject ml-core.js into MAIN world
+        // Inject face-api.js from extension (bundled locally)
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['lib/face-api.min.js'],
+            world: 'MAIN'
+        });
+        console.log('[BG] Injected face-api.min.js');
+
+        // Wait for face-api to initialize
+        await new Promise(r => setTimeout(r, 500));
+
+        // Inject ml-core.js
         await chrome.scripting.executeScript({
             target: { tabId },
             files: ['lib/ml-core.js'],
             world: 'MAIN'
         });
+        console.log('[BG] Injected ml-core.js');
 
-        // Inject content script to MAIN world
+        // Inject content script
         await chrome.scripting.executeScript({
             target: { tabId },
             files: ['content.js'],
             world: 'MAIN'
         });
+        console.log('[BG] Injected content.js');
 
-        console.log('[BG] Scripts injected, setting localStorage command');
-
-        // Set command in localStorage of the page
+        // Set command to start
         await chrome.scripting.executeScript({
             target: { tabId },
             world: 'MAIN',
             func: () => {
                 localStorage.setItem('cognen_meetCommand', JSON.stringify('START'));
                 localStorage.setItem('cognen_commandTimestamp', JSON.stringify(Date.now()));
-                console.log('[CognEn] START command set in localStorage');
+                console.log('[CognEn] START command set');
             }
         });
 
-        // Start syncing localStorage to chrome.storage
+        // Start data sync
         startDataSync(tabId);
 
         return true;
@@ -153,7 +163,6 @@ function startDataSync(tabId) {
                 const detection = results[0].result;
                 await chrome.storage.local.set({ lastDetection: detection });
 
-                // Update badge
                 if (detection.prediction && detection.prediction.rawScore) {
                     const score = detection.prediction.rawScore;
                     chrome.action.setBadgeText({ text: String(score) });
@@ -166,7 +175,6 @@ function startDataSync(tabId) {
                 }
             }
         } catch (e) {
-            // Tab might be closed
             stopDataSync();
         }
     }, 500);
