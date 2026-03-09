@@ -86,8 +86,30 @@
 [x] v1.0 WASM: scripts/setup-models.sh copies WASM from node_modules; public/onnx/.gitkeep added
 [x] v2.0 face landmarks: FaceLandmarksDetector (MediaPipe FaceMesh, 68-pt ibug mapping) in perception/face_landmarks.py; wired into RoomAnalyzer._get_landmarks()
 [x] v2.0 models: models/download_models.py created; v2.0/models/.gitkeep placeholder added
-[ ] Training: Collect classroom dataset (ARCHITECTURE §6); train behavior_classifier.onnx
-[ ] Evaluation: Run metrics from ARCHITECTURE §7 on held-out test set
+## Phase 8 — Dataset Loaders
+[x] training/datasets/base_dataset.py — abstract base, BEHAVIOR_CLASSES, build_windows(), encode_feature()
+[x] training/datasets/daisee_loader.py — DAiSEE 9K video clips (engagement → 6-class mapping)
+[x] training/datasets/engagenet_loader.py — EngageNet 127K frames (score-based pseudo-sequences)
+[x] training/datasets/open_images_loader.py — Open Images v7 YOLO pair iterator + dataset.yaml writer
+[x] training/datasets/classroom_loader.py — Custom CCTV clips with JSON annotations per-person/frame
+
+## Phase 9 — Training Pipeline
+[x] training/model.py — BehaviorClassifierCNN: 3×Conv1D(BN+ReLU)+GAP+FC, input (B,13,15), output (B,6)
+[x] training/feature_extractor.py — extract_feature_vector() mirrors temporal-classifier.ts 13-dim vector
+[x] training/train_classifier.py — class-weighted CE, AdamW, cosine LR, early stopping; auto-exports ONNX
+[x] training/export_onnx.py — torch.onnx.export (opset 17, dynamic batch) + ORT verification
+
+## Phase 10 — Evaluation Framework
+[x] evaluation/behavior_metrics.py — BehaviorEvaluator: accuracy, F1-macro, per-class P/R/F1, temporal consistency
+[x] evaluation/tracking_metrics.py — TrackingEvaluator: MOTA, IDF1, ID switches/min (MOTChallenge standard)
+[x] evaluation/occupancy_metrics.py — OccupancyEvaluator: accuracy + absence detection latency P95
+[x] evaluation/latency_benchmark.py — LatencyBenchmark context manager + benchmark_v2_pipeline() helper
+[x] evaluation/evaluate.py — consolidated runner → JSON report; all ARCHITECTURE §7 targets pass/fail
+
+## Phase 11 — End-to-End Tests (52 tests, all passing)
+[x] tests/test_v1_pipeline.py — 19 tests: FaceMetrics, rule-based inference, temporal window, full pipeline
+[x] tests/test_v2_pipeline.py — 21 tests: Track, SeatMapper(6-seat), BehaviorClassifier, RoomSnapshot, eval smoke
+[x] tests/test_integration.py — 12 tests: feature extractor, dataset base, streaming eval, per-seat isolation
 
 ---
 

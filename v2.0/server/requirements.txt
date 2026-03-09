@@ -14,3 +14,11 @@ python-dotenv>=1.0.1
 
 # ByteTrack — install from source or use boxmot wrapper
 boxmot>=10.0.43             # pip install boxmot (includes ByteTrack)
+
+# Training & evaluation
+mediapipe>=0.10.0           # FaceMesh (face landmark detection)
+scikit-learn>=1.4.0         # metrics helpers
+onnx>=1.16.0                # ONNX model verification
+
+# Testing
+pytest>=8.2.0
