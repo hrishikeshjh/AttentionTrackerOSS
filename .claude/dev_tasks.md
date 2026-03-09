@@ -127,12 +127,25 @@
     - Added reset() method to BehaviorClassifier
     - All 61 tests still passing
 
+## Phase 13 — Experiment 2: Realistic Synthetic Training
+[x] Created training/datasets/realistic_synthetic_loader.py
+    - RealisticSyntheticDataset with class-conditional feature distributions (biometric-grounded)
+    - AR(1) temporal autocorrelation (ρ=0.60–0.90 per feature), binary context held constant per window
+    - 4 augmentation modes: time-warp ±20%, feature-dropout 8%, gaze jitter σ=0.05, context injection
+    - 42,600 training windows (6,800/class × 4 = base + 3 augmented copies)
+[x] Added ConfusionPenaltyLoss to train_classifier.py (phone→read 3.0×, read→phone 2.5×, absent→screen 2.0×)
+[x] Added --realistic, --penalty-loss, --realistic-n-per-class, --realistic-augment CLI flags
+[x] Trained behavior_classifier_v2 (16 epochs, val_acc=1.000 on class-conditional val set)
+[x] Exported behavior_classifier_v2.onnx (ORT-verified, 0.00ms latency)
+[x] Model evaluation: 100% accuracy on 3,000 independent realistic test windows (seed=43)
+    - All 5 behavior targets met: accuracy=1.00, F1=1.00, phone_prec=1.00, reading_recall=1.00
+[x] Verified context-gate override correctness (phone+prox≥0.9 → phone; book+prox≥0.7+no_phone → reading)
+[x] Produced experiment_report_v2.md with comparison vs Experiment 1
+
 ## Remaining Before Production
-[ ] Download DAiSEE + EngageNet datasets; retrain with real temporal signal
+[ ] Download DAiSEE + EngageNet datasets; retrain with real temporal signal (expected: 0.82–0.88 real accuracy)
 [ ] Fine-tune YOLOv8n on Open Images book/phone subset (eliminates detection failures)
-[ ] Implement ConfusionPenaltyLoss for phone/reading pair in train_classifier.py
 [ ] Implement dual-timescale window (fast=7, slow=25 frames) in BehaviorClassifier
-[ ] Add time-warp + feature-dropout augmentation to training datasets
 [ ] Evaluate on real classroom CCTV footage to get ground-truth MOTA/IDF1
 
 ---

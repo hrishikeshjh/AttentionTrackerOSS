@@ -31,6 +31,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from training.model import BehaviorClassifierCNN, NUM_CLASSES
 from training.datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE, BEHAVIOR_CLASSES
 
+# Class index shortcuts for ConfusionPenaltyLoss
+_PHONE   = 2   # using_phone
+_READING = 1   # attentive_reading
+_ABSENT  = 5   # absent
+_SCREEN  = 0   # attentive_screen
+
 
 # ── Dataset helpers ───────────────────────────────────────────────────────────
 
@@ -68,10 +74,25 @@ def _load_all_samples(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]
             _consume(ClassroomDataset(args.classroom, split=split,
                                       max_clips=args.max_clips_per_dataset))
 
+    if args.realistic:
+        logger.info("Using RealisticSyntheticDataset (class-conditional AR(1) windows) …")
+        from training.datasets.realistic_synthetic_loader import RealisticSyntheticDataset
+        for split in ("train", "val"):
+            ds = RealisticSyntheticDataset(
+                split=split,
+                n_per_class=args.realistic_n_per_class,
+                augment_factor=args.realistic_augment if split == "train" else 0,
+                seed=42,
+            )
+            logger.info("  %s: %d windows  dist=%s", split, len(ds), ds.class_distribution())
+            for window, label in ds:
+                all_windows.append(window)
+                all_labels.append(label)
+
     if not all_windows:
-        logger.warning("No dataset paths provided. Using synthetic data for smoke-test.")
+        logger.warning("No dataset paths provided. Using random synthetic data (smoke-test only).")
         rng = np.random.default_rng(0)
-        all_windows = [rng.random((WINDOW_SIZE, FEATURE_DIM), dtype=np.float32)
+        all_windows = [rng.random((WINDOW_SIZE, FEATURE_DIM)).astype(np.float32)
                        for _ in range(1000)]
         all_labels  = [random.randint(0, NUM_CLASSES - 1) for _ in range(1000)]
 
@@ -108,6 +129,49 @@ def _iter_batches(
 
 # ── Training loop ─────────────────────────────────────────────────────────────
 
+class ConfusionPenaltyLoss:
+    """
+    CrossEntropyLoss with pair-specific penalty multipliers.
+
+    Asymmetrically penalises the most costly class confusions
+    identified in experiment_report.md §3.1:
+        phone → read  : 3.0×   (high safety cost — hidden phone use)
+        read  → phone : 2.5×   (moderate — student unfairly penalised)
+        absent → screen: 2.0×  (safety-critical — absent student missed)
+    """
+
+    PENALTY: "np.ndarray | None" = None
+
+    @classmethod
+    def _get_penalty(cls) -> "torch.Tensor":
+        import torch
+        if cls.PENALTY is None:
+            P = np.ones((NUM_CLASSES, NUM_CLASSES), dtype=np.float32)
+            P[_PHONE,   _READING] = 3.0
+            P[_READING, _PHONE]   = 2.5
+            P[_ABSENT,  _SCREEN]  = 2.0
+            cls.PENALTY = P
+        return torch.from_numpy(cls.PENALTY)
+
+    @classmethod
+    def compute(cls, logits: "torch.Tensor", targets: "torch.Tensor",
+                class_weights: "torch.Tensor | None" = None,
+                label_smoothing: float = 0.05) -> "torch.Tensor":
+        import torch
+        import torch.nn.functional as F
+
+        penalty = cls._get_penalty().to(logits.device)    # (C, C)
+        ce = F.cross_entropy(
+            logits, targets,
+            weight=class_weights,
+            label_smoothing=label_smoothing,
+            reduction="none",
+        )                                                  # (B,)
+        pred  = logits.argmax(dim=-1)                      # (B,)
+        pen   = penalty[targets, pred]                     # (B,)
+        return (ce * pen).mean()
+
+
 def _compute_class_weights(y: np.ndarray) -> "torch.Tensor":
     """Inverse-frequency weighting for class imbalance."""
     import torch
@@ -137,7 +201,12 @@ def train(args: argparse.Namespace) -> None:
     logger.info("Model parameters: %d", sum(p.numel() for p in model.parameters()))
 
     class_weights = _compute_class_weights(y_tr).to(device)
-    criterion     = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
+    use_penalty   = getattr(args, "penalty_loss", False)
+    if use_penalty:
+        logger.info("Using ConfusionPenaltyLoss (phone/reading pair penalty 3.0×/2.5×)")
+        criterion = None   # placeholder — loss computed inline
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
     optimizer     = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler     = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
@@ -160,7 +229,10 @@ def train(args: argparse.Namespace) -> None:
 
             optimizer.zero_grad()
             logits = model(Xt)
-            loss   = criterion(logits, yt)
+            if use_penalty:
+                loss = ConfusionPenaltyLoss.compute(logits, yt, class_weights)
+            else:
+                loss = criterion(logits, yt)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -236,6 +308,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--val_ratio", type=float, default=0.15)
     p.add_argument("--max_clips_per_dataset", type=int, default=None,
                    help="Cap clips/images per dataset (for quick debug runs)")
+    # Realistic synthetic data options
+    p.add_argument("--realistic", action="store_true",
+                   help="Use RealisticSyntheticDataset (class-conditional AR(1) windows)")
+    p.add_argument("--realistic-n-per-class", dest="realistic_n_per_class", type=int, default=2000,
+                   help="Base windows per class for realistic synthetic data")
+    p.add_argument("--realistic-augment", dest="realistic_augment", type=int, default=3,
+                   help="Augmented copies per base window (train only)")
+    # Loss function options
+    p.add_argument("--penalty-loss", dest="penalty_loss", action="store_true",
+                   help="Use ConfusionPenaltyLoss instead of standard CrossEntropyLoss")
     return p.parse_args()
 
 
