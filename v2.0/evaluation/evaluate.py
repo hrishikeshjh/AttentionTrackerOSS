@@ -226,7 +226,23 @@ def main(args: argparse.Namespace) -> None:
     report_dir = Path(__file__).parent / "reports"
     report_dir.mkdir(exist_ok=True)
     report_path = report_dir / f"eval_{time.strftime('%Y%m%d_%H%M%S')}.json"
-    report_path.write_text(json.dumps(report, indent=2))
+    class _Encoder(json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, (bool, int, float)):
+                return super().default(o)
+            try:
+                import numpy as _np
+                if isinstance(o, _np.bool_):
+                    return bool(o)
+                if isinstance(o, (_np.integer,)):
+                    return int(o)
+                if isinstance(o, (_np.floating,)):
+                    return float(o)
+            except ImportError:
+                pass
+            return super().default(o)
+
+    report_path.write_text(json.dumps(report, indent=2, cls=_Encoder))
     logger.info("Report written → %s", report_path)
 
 

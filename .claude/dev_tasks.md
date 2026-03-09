@@ -106,10 +106,34 @@
 [x] evaluation/latency_benchmark.py — LatencyBenchmark context manager + benchmark_v2_pipeline() helper
 [x] evaluation/evaluate.py — consolidated runner → JSON report; all ARCHITECTURE §7 targets pass/fail
 
-## Phase 11 — End-to-End Tests (52 tests, all passing)
+## Phase 11 — End-to-End Tests (61 tests, all passing)
 [x] tests/test_v1_pipeline.py — 19 tests: FaceMetrics, rule-based inference, temporal window, full pipeline
 [x] tests/test_v2_pipeline.py — 21 tests: Track, SeatMapper(6-seat), BehaviorClassifier, RoomSnapshot, eval smoke
 [x] tests/test_integration.py — 12 tests: feature extractor, dataset base, streaming eval, per-seat isolation
+
+## Phase 12 — Experimentation & Improvement
+[x] Trained BehaviorClassifierCNN (synthetic baseline): 13 epochs, val_acc=0.213, early stopping
+[x] Exported behavior_classifier.onnx (opset 17, 20,550 params, ORT-verified, 0.02ms inference)
+[x] Ran evaluate.py: 8/11 ARCHITECTURE targets met
+[x] Identified 3 failing targets (all phone/reading disambiguation):
+    - accuracy 0.808 vs 0.85 target (−4.2pp)
+    - phone precision 0.778 vs 0.90 target (−12.2pp, highest gap)
+    - reading recall 0.778 vs 0.85 target (−7.2pp)
+[x] Produced experiment_report.md with confusion matrix analysis + 6 improvement proposals
+[x] Implemented P1 improvement: context-gate override in behavior_classifier.py
+    - _context_gate(): boosts phone prob (+0.85) when has_phone+prox≥0.9; boosts reading (+0.80) when has_book+prox≥0.7+no_phone
+    - Ambiguity flag: compresses confidence when downward gaze + no object context
+    - Fixed proximity encoding inconsistency (inverted scale → standard 0.0-1.0)
+    - Added reset() method to BehaviorClassifier
+    - All 61 tests still passing
+
+## Remaining Before Production
+[ ] Download DAiSEE + EngageNet datasets; retrain with real temporal signal
+[ ] Fine-tune YOLOv8n on Open Images book/phone subset (eliminates detection failures)
+[ ] Implement ConfusionPenaltyLoss for phone/reading pair in train_classifier.py
+[ ] Implement dual-timescale window (fast=7, slow=25 frames) in BehaviorClassifier
+[ ] Add time-warp + feature-dropout augmentation to training datasets
+[ ] Evaluate on real classroom CCTV footage to get ground-truth MOTA/IDF1
 
 ---
 
