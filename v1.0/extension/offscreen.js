@@ -11,6 +11,8 @@ let isRunning = false;
 let animationFrameId = null;
 let metricsAggregator = null;
 let mlEngine = null;
+let proximityDetector = null;
+let temporalClassifier = null;
 let modelsLoaded = false;
 
 // Initialize
@@ -38,8 +40,16 @@ async function init() {
         if (typeof FaceMetricsAggregator !== 'undefined') {
             metricsAggregator = new FaceMetricsAggregator();
         }
-        if (typeof MLEngine !== 'undefined') {
-            mlEngine = new MLEngine();
+        // MLEngineV2 (context-aware) is preferred; MLEngine is the legacy fallback
+        if (typeof window.MLEngine !== 'undefined') {
+            mlEngine = new window.MLEngine();
+        }
+        // Behaviour context modules (rule-based only, no ONNX in extension)
+        if (typeof window.HandObjectProximityDetector !== 'undefined') {
+            proximityDetector = new window.HandObjectProximityDetector();
+        }
+        if (typeof window.TemporalBehaviorClassifier !== 'undefined') {
+            temporalClassifier = new window.TemporalBehaviorClassifier();
         }
 
         await chrome.storage.local.set({ modelsLoaded: true });
@@ -124,12 +134,32 @@ async function runDetection() {
         if (detections && detections.length > 0 && metricsAggregator && mlEngine) {
             const landmarks = detections[0].landmarks.positions;
 
-            const metrics = metricsAggregator.calculateExtendedMetrics(
+            const baseMetrics = metricsAggregator.calculateExtendedMetrics(
                 landmarks,
                 webcam.videoWidth,
                 webcam.videoHeight,
                 now
             );
+
+            // Extension runs in metrics-only mode (no ONNX object detection)
+            const detectedObjects = [];
+            const handObjectProximity = proximityDetector
+                ? proximityDetector.compute([], detectedObjects)
+                : 'hands_not_visible';
+
+            const metrics = Object.assign({}, baseMetrics, {
+                detectedObjects,
+                handObjectProximity,
+            });
+
+            // Update temporal classifier with face metrics only
+            if (temporalClassifier) {
+                metrics.behaviorResult = temporalClassifier.update({
+                    metrics,
+                    detectedObjects,
+                    handProximity: handObjectProximity,
+                });
+            }
 
             const prediction = mlEngine.predict(metrics);
 
@@ -192,6 +222,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'RESET_ML':
             if (metricsAggregator) metricsAggregator.reset();
             if (mlEngine) mlEngine.reset();
+            if (temporalClassifier) temporalClassifier.reset();
             frameCount = 0;
             sendResponse({ success: true });
             break;

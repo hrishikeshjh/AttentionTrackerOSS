@@ -7,8 +7,11 @@ import { Loader2, Play, StopCircle, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { SessionDataPoint, ExtendedFaceMetrics, MLPrediction } from '@/lib/types';
 import * as faceapi from 'face-api.js';
-import { FaceMetricsAggregator } from '@/lib/face-geometry';
-import { getMLEngine, resetMLEngine } from '@/lib/ml-engine';
+import { FaceMetricsAggregator, HandObjectProximityDetector } from '@/lib/face-geometry';
+import { getMLEngine, resetMLEngine, debugPrediction } from '@/lib/ml-engine';
+import type { ObjectDetector } from '@/lib/object-detector';
+import type { HandTracker } from '@/lib/hand-tracker';
+import type { TemporalBehaviorClassifier } from '@/lib/temporal-classifier';
 
 interface WebcamPanelProps {
   sessionActive: boolean;
@@ -40,6 +43,12 @@ export default function WebcamPanel({
   const lastDataPointTime = useRef<number>(0);
   const DATA_POINT_INTERVAL = 1000; // Record data point every 1 second
 
+  // Context-aware inference modules (lazily loaded after face-api models are ready)
+  const objectDetectorRef = useRef<ObjectDetector | null>(null);
+  const handTrackerRef = useRef<HandTracker | null>(null);
+  const proximityDetectorRef = useRef<HandObjectProximityDetector>(new HandObjectProximityDetector());
+  const temporalClassifierRef = useRef<TemporalBehaviorClassifier | null>(null);
+
   // Load face-api.js models
   useEffect(() => {
     const loadModels = async () => {
@@ -65,6 +74,45 @@ export default function WebcamPanel({
     };
     loadModels();
   }, [toast]);
+
+  // Lazy-load context modules once face-api models are ready
+  useEffect(() => {
+    if (!modelsLoaded) return;
+    let cancelled = false;
+
+    const loadContextModules = async () => {
+      try {
+        const [{ ObjectDetector: OD }, { HandTracker: HT }, { TemporalBehaviorClassifier: TBC }] =
+          await Promise.all([
+            import('@/lib/object-detector'),
+            import('@/lib/hand-tracker'),
+            import('@/lib/temporal-classifier'),
+          ]);
+        if (cancelled) return;
+
+        const od = new OD();
+        const ht = new HT();
+        const tbc = new TBC();
+
+        // Load models in parallel; failures are non-fatal
+        await Promise.allSettled([
+          od.load('/models/yolov8n-objects.onnx'),
+          ht.initialize(),
+        ]);
+
+        if (!cancelled) {
+          objectDetectorRef.current = od;
+          handTrackerRef.current = ht;
+          temporalClassifierRef.current = tbc;
+        }
+      } catch (err) {
+        console.warn('[CognEn] Context modules failed to load — running in legacy mode:', err);
+      }
+    };
+
+    loadContextModules();
+    return () => { cancelled = true; };
+  }, [modelsLoaded]);
 
   // Handle tab visibility for multitasking detection
   useEffect(() => {
@@ -154,13 +202,41 @@ export default function WebcamPanel({
 
         const timestamp = Date.now();
 
-        // Calculate extended metrics using the aggregator
-        const extendedMetrics = metricsAggregatorRef.current.calculateExtendedMetrics(
+        // Run context detection in parallel with face metrics (non-blocking)
+        const [objectResult, handResult] = await Promise.allSettled([
+          objectDetectorRef.current?.detect(video) ?? Promise.resolve([]),
+          handTrackerRef.current?.detect(video) ?? Promise.resolve([]),
+        ]);
+
+        const detectedObjects = objectResult.status === 'fulfilled' ? objectResult.value : [];
+        const handResults    = handResult.status === 'fulfilled'   ? handResult.value  : [];
+
+        // Compute hand-object proximity
+        const handObjectProximity = proximityDetectorRef.current.compute(handResults, detectedObjects);
+
+        // Build base face metrics
+        const baseMetrics = metricsAggregatorRef.current.calculateExtendedMetrics(
           landmarks,
           video.videoWidth,
           video.videoHeight,
           timestamp
         );
+
+        // Build full ExtendedFaceMetrics with context fields
+        const extendedMetrics: ExtendedFaceMetrics = {
+          ...baseMetrics,
+          detectedObjects,
+          handObjectProximity,
+        };
+
+        // Update temporal classifier once with complete metrics
+        if (temporalClassifierRef.current) {
+          extendedMetrics.behaviorResult = temporalClassifierRef.current.update({
+            metrics: extendedMetrics,
+            detectedObjects,
+            handProximity: handObjectProximity,
+          });
+        }
 
         onNewFaceMetrics(extendedMetrics);
 
@@ -171,6 +247,10 @@ export default function WebcamPanel({
           // Get ML prediction
           const mlEngine = getMLEngine();
           const prediction = mlEngine.predict(extendedMetrics);
+
+          if (process.env.NODE_ENV === 'development') {
+            debugPrediction(extendedMetrics, prediction);
+          }
 
           onNewPrediction(prediction);
 
@@ -221,6 +301,7 @@ export default function WebcamPanel({
       // Reset ML engine and metrics aggregator for new session
       resetMLEngine();
       metricsAggregatorRef.current = new FaceMetricsAggregator();
+      temporalClassifierRef.current?.reset();
       lastDataPointTime.current = 0;
       onStartSession();
     }

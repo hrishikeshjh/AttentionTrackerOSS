@@ -73,14 +73,19 @@
 
 ## Next Steps
 
-[ ] Phase 5 follow-up: Wire ObjectDetector + HandTracker + TemporalBehaviorClassifier into webcam-panel.tsx
-    - Initialise modules on session start
-    - Attach context fields to ExtendedFaceMetrics before calling mlEngine.predict()
-[ ] Phase 6 follow-up: Wire HandObjectProximityDetector + TemporalBehaviorClassifier into offscreen.js
-[ ] v1.0 models: Download / fine-tune yolov8n-objects.onnx; place in public/models/
-[ ] v1.0 WASM: Copy onnxruntime-web WASM binaries to public/onnx/
-[ ] v2.0 face landmarks: Integrate face_alignment or dlib into RoomAnalyzer._get_landmarks()
-[ ] v2.0 models: Download yolov8m.pt, yolov8s-objects.pt, yolov8m-pose.pt into v2.0/models/
+[x] Phase 5 follow-up: Wire ObjectDetector + HandTracker + TemporalBehaviorClassifier into webcam-panel.tsx
+    - Lazy-load context modules after face-api models are ready (Promise.allSettled, non-fatal)
+    - Attach detectedObjects, handObjectProximity, behaviorResult to ExtendedFaceMetrics
+    - debugPrediction() called in development mode
+    - temporalClassifier.reset() called on session start
+[x] Phase 6 follow-up: Wire HandObjectProximityDetector + TemporalBehaviorClassifier into offscreen.js
+    - Instantiated from window globals set by ml-core.js v4
+    - Metrics-only mode (empty detectedObjects); MLEngineV2 selected via window.MLEngine
+    - temporalClassifier.reset() added to RESET_ML handler
+[x] v1.0 models: scripts/setup-models.sh created; public/models/.gitkeep placeholder added
+[x] v1.0 WASM: scripts/setup-models.sh copies WASM from node_modules; public/onnx/.gitkeep added
+[x] v2.0 face landmarks: FaceLandmarksDetector (MediaPipe FaceMesh, 68-pt ibug mapping) in perception/face_landmarks.py; wired into RoomAnalyzer._get_landmarks()
+[x] v2.0 models: models/download_models.py created; v2.0/models/.gitkeep placeholder added
 [ ] Training: Collect classroom dataset (ARCHITECTURE §6); train behavior_classifier.onnx
 [ ] Evaluation: Run metrics from ARCHITECTURE §7 on held-out test set
 

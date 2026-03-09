@@ -15,9 +15,10 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from perception.person_detector  import PersonDetector
-from perception.object_detector  import ObjectDetector
-from perception.pose_estimator   import PoseEstimator, PoseDetection
+from perception.person_detector   import PersonDetector
+from perception.object_detector   import ObjectDetector
+from perception.pose_estimator    import PoseEstimator, PoseDetection
+from perception.face_landmarks    import FaceLandmarksDetector
 from tracking.byte_tracker       import ByteTrackWrapper, Track
 from tracking.seat_mapper        import SeatMapper
 from features.face_metrics       import (
@@ -60,9 +61,10 @@ class RoomAnalyzer:
         self._snapshot: dict = {}
 
         # Perception
-        self._person_det = PersonDetector()
-        self._object_det = ObjectDetector(INPUT_WIDTH, INPUT_HEIGHT)
-        self._pose_est   = PoseEstimator()
+        self._person_det   = PersonDetector()
+        self._object_det   = ObjectDetector(INPUT_WIDTH, INPUT_HEIGHT)
+        self._pose_est     = PoseEstimator()
+        self._face_lms_det = FaceLandmarksDetector(max_faces=1)
 
         # Tracking
         self._tracker    = ByteTrackWrapper(frame_rate=TARGET_FPS)
@@ -223,10 +225,13 @@ class RoomAnalyzer:
 
     def _get_landmarks(self, face_crop: np.ndarray):
         """
-        Stub — replace with face_alignment.FaceAlignment or dlib predictor.
-        Returns None until a landmark model is integrated.
+        Detect 68 facial landmarks from a face crop using MediaPipe FaceMesh.
+        Returns a list of Point2D objects (ibug 68-point convention) or None.
         """
-        return None
+        if not self._face_lms_det.available or face_crop.size == 0:
+            return None
+        results = self._face_lms_det.detect(face_crop)
+        return results[0] if results else None
 
     def _bbox_overlap(self, person_xyxy, obj_xyxy) -> bool:
         """True if object bbox centre falls inside person bbox."""
@@ -248,6 +253,5 @@ class RoomAnalyzer:
             union = (px2-px1)*(py2-py1) + (bx2-bx1)*(by2-by1) - inter
             iou = inter / union if union else 0.0
             if iou > best_iou:
-                best_iou = iou
-                best = p
+                best_iou, best = iou, p
         return best
