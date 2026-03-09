@@ -1,0 +1,16 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0
+opencv-python-headless>=4.9.0
+ultralytics>=8.2.0          # YOLOv8 (person, object, pose)
+torch>=2.2.0
+torchvision>=0.17.0
+numpy>=1.26.0
+onnxruntime-gpu>=1.18.0     # optional: GPU inference
+Pillow>=10.3.0
+pydantic>=2.7.0
+shapely>=2.0.3              # polygon IoU for seat zones
+python-dotenv>=1.0.1
+
+# ByteTrack — install from source or use boxmot wrapper
+boxmot>=10.0.43             # pip install boxmot (includes ByteTrack)

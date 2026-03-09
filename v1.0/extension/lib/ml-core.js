@@ -691,13 +691,345 @@ class MLEngine {
     }
 }
 
+// ==================== FEATURE WEIGHTS (UPGRADED) ====================
+// ARCHITECTURE.md §2 — replaces pitchDeviation when context is available.
+
+const FEATURE_WEIGHTS_V1_UPGRADED = {
+    // Eye-based
+    ear: 0.10,
+    perclos: 0.08,
+    blinkRate: 0.05,
+    gazeDeviation: 0.12,
+    // Head pose (pitchDeviation removed — replaced below)
+    headPoseStability: 0.10,
+    yawDeviation: 0.08,
+    // Fatigue
+    fatigueIndex: 0.07,
+    fidgetScore: 0.04,
+    mouthOpenness: 0.02,
+    faceDistance: 0.02,
+    facePresence: 0.02,
+    // NEW context-aware features
+    contextAwarePitch: 0.12,
+    objectContext: 0.10,
+    handObjectProximity: 0.05,
+    temporalPattern: 0.03,
+};
+
+// ==================== CONTEXT HELPERS ====================
+
+/**
+ * Context-aware pitch score (ARCHITECTURE.md §2.2).
+ * Phone+downward→20, book+downward→85, drowsy→15, unknown-down→40.
+ */
+function computeContextAwarePitch(metrics) {
+    const pitch = metrics.pitch;
+    if (pitch === null || pitch === undefined) return 50;
+
+    if (pitch < -15) {
+        const handProx = metrics.handObjectProximity;
+        const objects = metrics.detectedObjects || [];
+        const hasBook = objects.some(o => o.class === 'book' || o.class === 'notebook');
+        const hasPhone = objects.some(o => o.class === 'phone');
+
+        if (handProx === 'holding_phone' || hasPhone) return 20;
+        if (handProx === 'holding_book' || hasBook) return 85;
+        if ((metrics.ear || 0.3) < 0.22 && metrics.perclos > 20) return 15;
+        return 40;
+    }
+
+    const absPitch = Math.abs(pitch);
+    if (absPitch <= 15) return 100 - (absPitch / 15) * 20;
+    return Math.max(30, 80 - (absPitch - 15) * 2);
+}
+
+function computeObjectContext(metrics) {
+    const objects = metrics.detectedObjects || [];
+    if (objects.length === 0) return 65;
+
+    if (objects.some(o => o.class === 'phone')) return 25;
+
+    const hasBook = objects.some(o => o.class === 'book' || o.class === 'notebook');
+    if (hasBook) return (metrics.pitch || 0) < -10 ? 80 : 70;
+
+    const hasLaptop = objects.some(o => o.class === 'laptop');
+    if (hasLaptop) return Math.abs(metrics.pitch || 0) < 15 ? 80 : 65;
+
+    return 65;
+}
+
+function encodeHandProximity(proximity) {
+    switch (proximity) {
+        case 'holding_book':      return 80;
+        case 'holding_pen':       return 75;
+        case 'hands_on_desk':     return 65;
+        case 'hands_not_visible': return 60;
+        case 'holding_phone':     return 20;
+        default:                  return 60;
+    }
+}
+
+function encodeTemporalPattern(behaviorResult) {
+    return behaviorResult ? behaviorResult.attentionScore : 60;
+}
+
+// ==================== HAND-OBJECT PROXIMITY DETECTOR ====================
+
+/**
+ * HandObjectProximityDetector (ARCHITECTURE.md §2.4)
+ * Matches hand centroids to detected object bounding boxes.
+ *
+ * @param {Array} handResults       [{landmarks: [{x,y,z}×21], handedness}]
+ * @param {Array} detectedObjects   [{class, confidence, bbox:{x,y,w,h}}]
+ * @returns {string} HandObjectProximity value
+ */
+class HandObjectProximityDetector {
+    constructor() {
+        this.PROXIMITY_THRESHOLD = 0.20;
+    }
+
+    compute(handResults, detectedObjects) {
+        if (!handResults || handResults.length === 0) return 'hands_not_visible';
+        if (!detectedObjects || detectedObjects.length === 0) return 'hands_on_desk';
+
+        const handCenters = handResults.map(h => this._handCenter(h.landmarks));
+
+        for (const priority of ['phone', 'book', 'notebook', 'pen']) {
+            const obj = detectedObjects.find(o => o.class === priority);
+            if (!obj) continue;
+
+            const objCenter = { x: obj.bbox.x, y: obj.bbox.y };
+            for (const hand of handCenters) {
+                if (this._dist(hand, objCenter) < this.PROXIMITY_THRESHOLD) {
+                    if (priority === 'phone') return 'holding_phone';
+                    if (priority === 'book' || priority === 'notebook') return 'holding_book';
+                    if (priority === 'pen') return 'holding_pen';
+                }
+            }
+        }
+        return 'hands_on_desk';
+    }
+
+    _handCenter(landmarks) {
+        const sum = landmarks.reduce((a, l) => ({ x: a.x + l.x, y: a.y + l.y }), { x: 0, y: 0 });
+        return { x: sum.x / landmarks.length, y: sum.y / landmarks.length };
+    }
+
+    _dist(a, b) {
+        return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    }
+}
+
+// ==================== TEMPORAL BEHAVIOR CLASSIFIER ====================
+
+/**
+ * TemporalBehaviorClassifier (ARCHITECTURE.md §2.3)
+ * 15-frame sliding window with rule-based classification.
+ * No ONNX dependency in the extension — rule-based only.
+ *
+ * Behavior labels → attention scores:
+ *   attentive_screen: 85, attentive_reading: 80, distracted: 45,
+ *   using_phone: 25, drowsy: 20, absent: 0
+ */
+class TemporalBehaviorClassifier {
+    constructor() {
+        this.WINDOW_SIZE = 15;
+        this.FEATURE_DIM = 13;
+        this.featureBuffer = [];
+        this.lastResult = { label: 'distracted', attentionScore: 50, confidence: 0, source: 'rule_based' };
+
+        this.ATTENTION_SCORES = {
+            attentive_screen: 85,
+            attentive_reading: 80,
+            distracted: 45,
+            using_phone: 25,
+            drowsy: 20,
+            absent: 0,
+        };
+    }
+
+    update(frame) {
+        this.featureBuffer.push(this._extractFeatures(frame));
+        if (this.featureBuffer.length > this.WINDOW_SIZE) this.featureBuffer.shift();
+
+        if (this.featureBuffer.length < this.WINDOW_SIZE) {
+            this.lastResult = this._singleFrameClassify(frame);
+        } else {
+            this.lastResult = this._temporalClassify();
+        }
+        return this.lastResult;
+    }
+
+    getLastResult() { return this.lastResult; }
+
+    reset() {
+        this.featureBuffer = [];
+        this.lastResult = { label: 'distracted', attentionScore: 50, confidence: 0, source: 'rule_based' };
+    }
+
+    _extractFeatures(frame) {
+        const { metrics, detectedObjects = [], handProximity = 'hands_not_visible' } = frame;
+        const hasBook  = detectedObjects.some(o => o.class === 'book' || o.class === 'notebook') ? 1 : 0;
+        const hasPhone = detectedObjects.some(o => o.class === 'phone') ? 1 : 0;
+        const hasLaptop = detectedObjects.some(o => o.class === 'laptop') ? 1 : 0;
+        const hasNone = !hasBook && !hasPhone && !hasLaptop ? 1 : 0;
+        const proxCode = encodeHandProximity(handProximity) / 100;
+
+        return [
+            clamp(metrics.gazeX || 0, -1, 1),
+            clamp(metrics.gazeY || 0, -1, 1),
+            clamp((metrics.pitch || 0) / 90, -1, 1),
+            clamp((metrics.yaw  || 0) / 90, -1, 1),
+            clamp(metrics.ear || 0.3, 0, 1),
+            clamp(metrics.perclos / 100, 0, 1),
+            clamp(metrics.headPoseStability / 100, 0, 1),
+            hasBook, hasPhone, hasLaptop, hasNone,
+            clamp(metrics.fidgetScore / 100, 0, 1),
+            proxCode,
+        ];
+    }
+
+    _singleFrameClassify(frame) {
+        const { metrics, detectedObjects = [], handProximity } = frame;
+
+        if (!metrics.faceArea || metrics.faceArea < 0.005)
+            return this._result('absent', 1.0);
+
+        if ((metrics.ear || 0.3) < 0.22 && metrics.perclos > 20)
+            return this._result('drowsy', 0.85);
+
+        const pitch = metrics.pitch || 0;
+        const isLookingDown = pitch < -15;
+        const phoneDetected = detectedObjects.some(o => o.class === 'phone');
+        if (phoneDetected && (handProximity === 'holding_phone' || isLookingDown))
+            return this._result('using_phone', 0.80);
+
+        const bookDetected = detectedObjects.some(o => o.class === 'book' || o.class === 'notebook');
+        if (bookDetected && (handProximity === 'holding_book' || isLookingDown))
+            return this._result('attentive_reading', 0.75);
+
+        const gazeDev = Math.sqrt((metrics.gazeX || 0) ** 2 + (metrics.gazeY || 0) ** 2);
+        if (gazeDev < 0.3 && Math.abs(pitch) < 15)
+            return this._result('attentive_screen', 0.70);
+
+        return this._result('distracted', 0.60);
+    }
+
+    _temporalClassify() {
+        const avg = new Array(this.FEATURE_DIM).fill(0);
+        for (const v of this.featureBuffer) v.forEach((x, i) => { avg[i] += x; });
+        avg.forEach((_, i) => { avg[i] /= this.featureBuffer.length; });
+
+        const [gazeX, gazeY, pitchNorm, , ear, perclos, stability,
+               hasBook, hasPhone, , , , proxCode] = avg;
+        const pitch = pitchNorm * 90;
+
+        if (ear < 0.22 && perclos > 0.2)         return this._result('drowsy', 0.88);
+        if (hasPhone > 0.5 && proxCode < 0.3)    return this._result('using_phone', 0.83);
+        if (hasBook > 0.5 && pitch < -15)        return this._result('attentive_reading', 0.82);
+
+        const gazeDev = Math.sqrt(gazeX ** 2 + gazeY ** 2);
+        if (gazeDev < 0.3 && Math.abs(pitch) < 15 && stability > 0.6)
+            return this._result('attentive_screen', 0.78);
+
+        return this._result('distracted', 0.65);
+    }
+
+    _result(label, confidence) {
+        return {
+            label,
+            attentionScore: this.ATTENTION_SCORES[label],
+            confidence,
+            source: this.featureBuffer.length >= this.WINDOW_SIZE ? 'temporal' : 'rule_based',
+        };
+    }
+}
+
+// ==================== UPGRADED ML ENGINE ====================
+
+/**
+ * MLEngineV2 — context-aware scoring (ARCHITECTURE.md §2).
+ * Extends MLEngine with the upgraded feature weights and context helpers.
+ * Falls back to legacy FEATURE_WEIGHTS when detectedObjects is not present.
+ */
+class MLEngineV2 extends MLEngine {
+    predict(metrics) {
+        // Legacy path — no context data attached yet
+        if (!metrics.detectedObjects) {
+            return super.predict(metrics);
+        }
+
+        // Upgraded path
+        const gazeDeviation = metrics.gazeX !== null && metrics.gazeY !== null
+            ? Math.sqrt(metrics.gazeX ** 2 + metrics.gazeY ** 2)
+            : null;
+
+        const featureValues = {
+            ear:               metrics.ear,
+            perclos:           metrics.perclos,
+            blinkRate:         metrics.blinkRate,
+            gazeDeviation,
+            headPoseStability: metrics.headPoseStability,
+            yawDeviation:      metrics.yaw,
+            fatigueIndex:      metrics.fatigueIndex,
+            fidgetScore:       metrics.fidgetScore,
+            mouthOpenness:     metrics.mouthOpenness,
+            faceDistance:      metrics.faceDistance,
+            facePresence:      metrics.faceArea,
+            // Context features
+            contextAwarePitch:    computeContextAwarePitch(metrics),
+            objectContext:        computeObjectContext(metrics),
+            handObjectProximity:  encodeHandProximity(metrics.handObjectProximity),
+            temporalPattern:      encodeTemporalPattern(metrics.behaviorResult),
+        };
+
+        let totalWeight = 0;
+        let weightedSum = 0;
+
+        for (const [name, value] of Object.entries(featureValues)) {
+            const weight = FEATURE_WEIGHTS_V1_UPGRADED[name] || 0;
+            if (!weight || value === null || value === undefined) continue;
+
+            const result = scoreFeature(name, value);
+            weightedSum += result.score * weight * result.quality;
+            totalWeight += weight * result.quality;
+        }
+
+        const rawScore = totalWeight > 0 ? weightedSum / totalWeight : 50;
+        const smoothedScore = this.scoreEMA.update(rawScore);
+
+        let attentionState;
+        if (smoothedScore >= THRESHOLDS.ATTENTIVE_MIN) {
+            attentionState = 'Attentive';
+        } else if (smoothedScore >= THRESHOLDS.DISTRACTED_MIN) {
+            attentionState = 'Distracted';
+        } else {
+            attentionState = 'Multitasking';
+        }
+
+        const prediction = {
+            attentionState,
+            confidence: 0.85,
+            rawScore: Math.round(smoothedScore),
+        };
+
+        this.predictionHistory.push(prediction);
+        if (this.predictionHistory.length > 100) this.predictionHistory.shift();
+
+        return prediction;
+    }
+}
+
 // Export
 if (typeof window !== 'undefined') {
     window.FaceMetricsAggregator = FaceMetricsAggregator;
-    window.MLEngine = MLEngine;
+    window.MLEngine = MLEngineV2;          // Upgraded engine replaces original
+    window.MLEngineLegacy = MLEngine;      // Original preserved for debug
     window.BlinkDetector = BlinkDetector;
     window.HeadPoseTracker = HeadPoseTracker;
     window.FatigueCalculator = FatigueCalculator;
+    window.HandObjectProximityDetector = HandObjectProximityDetector;
+    window.TemporalBehaviorClassifier = TemporalBehaviorClassifier;
 }
 
-console.log('[ML-Core] v3 loaded - STRICT mode');
+console.log('[ML-Core] v4 loaded — context-aware scoring enabled');
