@@ -1,5 +1,82 @@
 export type AttentionState = 'Attentive' | 'Distracted' | 'Multitasking' | 'Idle';
 
+// ==================== OBJECT DETECTION TYPES ====================
+
+export type ObjectClass =
+  | 'book'
+  | 'notebook'
+  | 'phone'
+  | 'laptop'
+  | 'mouse'
+  | 'keyboard'
+  | 'pen'
+  | 'tablet';
+
+/** Bounding box in normalized [0–1] coordinates (center x/y + w/h). */
+export type NormalizedBBox = {
+  x: number;      // center x
+  y: number;      // center y
+  width: number;
+  height: number;
+};
+
+export type DetectedObject = {
+  class: ObjectClass;
+  confidence: number; // 0–1
+  bbox: NormalizedBBox;
+};
+
+// ==================== HAND + CONTEXT TYPES ====================
+
+/** Single MediaPipe hand landmark, normalized [0–1]. */
+export type HandLandmark = { x: number; y: number; z: number };
+
+export type HandResult = {
+  landmarks: HandLandmark[]; // 21 landmarks
+  handedness: 'Left' | 'Right';
+};
+
+/**
+ * Proximity signal: what the user's hand is closest to.
+ * Computed by HandObjectProximityDetector in face-geometry.ts.
+ */
+export type HandObjectProximity =
+  | 'holding_book'
+  | 'holding_phone'
+  | 'holding_pen'
+  | 'hands_on_desk'
+  | 'hands_not_visible';
+
+/** High-level interpretation of what the user is currently doing. */
+export type StudyContext =
+  | 'reading'
+  | 'using_phone'
+  | 'watching_screen'
+  | 'writing'
+  | 'unknown';
+
+// ==================== BEHAVIOR CLASSIFICATION TYPES ====================
+
+/**
+ * Fine-grained behavior labels used by the temporal classifier.
+ * Maps to ARCHITECTURE.md §2.3 class definitions.
+ */
+export type BehaviorLabel =
+  | 'attentive_screen'   // watching lecture / screen
+  | 'attentive_reading'  // reading book / notes
+  | 'using_phone'        // phone distraction
+  | 'distracted'         // looking around, talking
+  | 'drowsy'             // head down + low EAR
+  | 'absent';            // face not in frame
+
+export type BehaviorResult = {
+  label: BehaviorLabel;
+  attentionScore: number;  // 0–100 mapped from label
+  confidence: number;      // 0–1 classifier confidence
+  /** 'temporal' = full 15-frame window used; 'rule_based' = fallback */
+  source: 'temporal' | 'rule_based';
+};
+
 export type SessionDataPoint = {
   timestamp: number;
   attentionScore: number;
@@ -49,6 +126,12 @@ export type ExtendedFaceMetrics = FaceMetrics & {
   earVariance: number; // variance over sliding window
   marVariance: number;
   poseVariance: number; // combined yaw/pitch/roll variance
+
+  // ── v1.0 Upgrade: context-aware features (optional until modules load) ──
+  detectedObjects?: DetectedObject[];
+  handObjectProximity?: HandObjectProximity;
+  studyContext?: StudyContext;
+  behaviorResult?: BehaviorResult;
 };
 
 // ML Prediction with confidence and feature importance

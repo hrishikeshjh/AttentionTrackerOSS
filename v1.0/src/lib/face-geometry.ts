@@ -1,5 +1,12 @@
 import type { Point } from 'face-api.js';
-import type { ExtendedFaceMetrics, FaceMetrics } from './types';
+import type {
+  ExtendedFaceMetrics,
+  FaceMetrics,
+  DetectedObject,
+  HandResult,
+  HandObjectProximity,
+} from './types';
+import { HandTracker } from './hand-tracker';
 
 // face-api.js landmark indices
 // https://github.com/justadudewhohacks/face-api.js/blob/master/src/classes/FaceLandmarks68.ts
@@ -494,6 +501,61 @@ export class FatigueCalculator {
     }
 
     return clamp(perclosScore + blinkScore + earTrendScore, 0, 100);
+  }
+}
+
+// ==================== HAND-OBJECT PROXIMITY DETECTOR ====================
+
+/**
+ * HandObjectProximityDetector
+ *
+ * Fuses detected hand centroids with detected object bounding boxes to produce
+ * the hand-object proximity signal required by ARCHITECTURE.md §2.4.
+ *
+ * Returns a HandObjectProximity label that the MLEngine uses for context-aware
+ * pitch scoring (book → attentive, phone → distracted).
+ */
+export class HandObjectProximityDetector {
+  /**
+   * Normalized distance threshold: a hand is "near" an object when the
+   * Euclidean distance (in [0,1] space) between the hand centroid and the
+   * object centre falls below this value.
+   */
+  private static readonly PROXIMITY_THRESHOLD = 0.20;
+
+  /**
+   * @param handResults    Output of HandTracker.detect()
+   * @param detectedObjects Output of ObjectDetector.detect()
+   */
+  compute(
+    handResults: HandResult[],
+    detectedObjects: DetectedObject[]
+  ): HandObjectProximity {
+    if (handResults.length === 0) return 'hands_not_visible';
+    if (detectedObjects.length === 0) return 'hands_on_desk';
+
+    const handCenters = handResults.map((h) =>
+      HandTracker.getHandCenter(h.landmarks)
+    );
+
+    // Priority order matches ARCHITECTURE.md §2.2: phone > book > pen
+    for (const priority of ['phone', 'book', 'notebook', 'pen'] as const) {
+      const obj = detectedObjects.find((o) => o.class === priority);
+      if (!obj) continue;
+
+      const objCenter = { x: obj.bbox.x, y: obj.bbox.y };
+
+      for (const hand of handCenters) {
+        const dist = HandTracker.distance2D(hand, objCenter);
+        if (dist < HandObjectProximityDetector.PROXIMITY_THRESHOLD) {
+          if (priority === 'phone') return 'holding_phone';
+          if (priority === 'book' || priority === 'notebook') return 'holding_book';
+          if (priority === 'pen') return 'holding_pen';
+        }
+      }
+    }
+
+    return 'hands_on_desk';
   }
 }
 
