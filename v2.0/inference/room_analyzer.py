@@ -65,8 +65,9 @@ class RoomAnalyzer:
 
     def __init__(self, room_id: str, seat_map: dict):
         self.room_id   = room_id
-        self._running  = False
+        self._running   = False
         self._snapshot: dict = {}
+        self._last_frame: np.ndarray | None = None
 
         # Perception
         self._person_det   = PersonDetector()
@@ -138,6 +139,7 @@ class RoomAnalyzer:
                     continue
 
                 resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
+                self._last_frame = resized
                 self._snapshot = self._process_frame(resized)
 
                 elapsed = time.perf_counter() - t0
@@ -158,6 +160,11 @@ class RoomAnalyzer:
 
     def get_snapshot(self) -> dict:
         return self._snapshot.copy()
+
+    def get_frame(self) -> np.ndarray | None:
+        """Return the last processed frame, or None if no frame yet."""
+        f = self._last_frame
+        return f.copy() if f is not None else None
 
     def shutdown(self) -> None:
         self._running = False

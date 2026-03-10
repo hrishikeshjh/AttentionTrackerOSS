@@ -158,8 +158,10 @@ async def _run(args: argparse.Namespace) -> None:
 
             # Annotated preview (requires display)
             if show and snapshot:
-                # Build a blank canvas since raw frame is not stored in snapshot
-                canvas = np.zeros((INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=np.uint8)
+                frame = analyzer.get_frame()
+                canvas = frame if frame is not None else np.zeros(
+                    (INPUT_HEIGHT, INPUT_WIDTH, 3), dtype=np.uint8
+                )
                 canvas = _draw_snapshot(canvas, snapshot)
                 cv2.imshow("CognEn v2.0", canvas)
                 key = cv2.waitKey(1) & 0xFF
