@@ -4,6 +4,12 @@ RoomAnalyzer — main orchestrator for v2.0 multi-person analysis.
 
 Instantiates all perception/tracking/feature/inference modules and
 drives the per-frame loop described in ARCHITECTURE.md §5.2.
+
+Frame sources
+-------------
+Use ``run_source(source, process_every_n)`` for full control over the
+input type (file / RTSP / camera).  ``run_stream(url)`` is kept for
+backwards compatibility and wraps an RTSPSource internally.
 """
 
 from __future__ import annotations
@@ -27,9 +33,11 @@ from features.face_metrics       import (
     FaceMetricsResult,
 )
 from inference.behavior_classifier import BehaviorClassifier, BehaviorResult
+from input.frame_source import FrameSource, RTSPSource
 from server.config import (
     INPUT_WIDTH, INPUT_HEIGHT, TARGET_FPS,
     BEHAVIOR_CLASSIFIER_MODEL,
+    PROCESS_EVERY_N_FRAMES,
 )
 
 logger = logging.getLogger("cognen.analyzer")
@@ -75,29 +83,78 @@ class RoomAnalyzer:
 
     # ── Public ───────────────────────────────────────────────────────────────
 
-    async def run_stream(self, stream_url: str) -> None:
-        """Open an RTSP / HTTP stream and process frames at TARGET_FPS."""
-        cap = cv2.VideoCapture(stream_url)
-        self._running = True
-        interval = 1.0 / TARGET_FPS
+    async def run_source(
+        self,
+        source: FrameSource,
+        process_every_n: int = PROCESS_EVERY_N_FRAMES,
+    ) -> None:
+        """
+        Main processing loop — reads frames from any FrameSource and runs the
+        full detection → tracking → behavior pipeline on every Nth frame.
+
+        Live sources (RTSP / camera) are drained at their native rate;
+        frames between analysis ticks are discarded to avoid buffer build-up.
+        Video files are paced to their encoded FPS.
+
+        Args:
+            source:          Open (or not yet opened) FrameSource.
+            process_every_n: Analyse 1 out of every N frames.  Use N > 1 to
+                             reduce CPU/GPU load on high-FPS streams without
+                             affecting buffer freshness.
+        """
+        if not source.open():
+            logger.error("[%s] Failed to open source: %s", self.room_id, source.name)
+            return
+
+        self._running   = True
+        frame_count     = 0
+        # How often to actually call _process_frame
+        process_interval = process_every_n / max(source.fps, TARGET_FPS)
+
+        logger.info(
+            "[%s] Starting on %s  process_every_n=%d  ~%.1f analysis FPS",
+            self.room_id, source.name, process_every_n,
+            max(source.fps, TARGET_FPS) / process_every_n,
+        )
 
         try:
-            while self._running and cap.isOpened():
+            while self._running:
                 t0 = time.perf_counter()
-                ret, frame = cap.read()
-                if not ret:
-                    logger.warning("Stream read failed, retrying in 1 s…")
-                    await asyncio.sleep(1.0)
+
+                # Blocking read — run in thread to avoid blocking event loop
+                ok, frame = await asyncio.to_thread(source.read)
+
+                if not ok:
+                    # VideoFileSource returns False on EOF; live sources
+                    # return False only after exhausting all reconnect attempts.
+                    logger.info("[%s] Source ended: %s", self.room_id, source.name)
+                    break
+
+                frame_count += 1
+
+                # Skip frames — still drain buffer, just don't process
+                if frame_count % process_every_n != 0:
+                    await asyncio.sleep(0)   # yield to event loop
                     continue
 
-                frame = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
-                self._snapshot = self._process_frame(frame)
+                resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
+                self._snapshot = self._process_frame(resized)
 
                 elapsed = time.perf_counter() - t0
-                await asyncio.sleep(max(0.0, interval - elapsed))
+                await asyncio.sleep(max(0.0, process_interval - elapsed))
+
         finally:
-            cap.release()
+            source.release()
             self._running = False
+            logger.info("[%s] Source released: %s", self.room_id, source.name)
+
+    async def run_stream(self, stream_url: str) -> None:
+        """
+        Backwards-compatible wrapper — opens ``stream_url`` as an RTSPSource.
+        For new code prefer ``run_source()`` with an explicit FrameSource.
+        """
+        src = RTSPSource(stream_url)
+        await self.run_source(src)
 
     def get_snapshot(self) -> dict:
         return self._snapshot.copy()

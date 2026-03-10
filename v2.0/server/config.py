@@ -27,6 +27,18 @@ INPUT_WIDTH    = 1280
 INPUT_HEIGHT   = 720
 TARGET_FPS     = 15
 
+# ── Frame source settings ────────────────────────────────────────────────────
+
+# Analyse 1 out of every N frames (higher = less CPU, more latency)
+# At 15 FPS source: N=1 → 15 analysis FPS, N=3 → 5 analysis FPS
+PROCESS_EVERY_N_FRAMES  = int(os.getenv("COGNEN_PROCESS_EVERY_N", "1"))
+
+# RTSP transport protocol: "tcp" (reliable) or "udp" (lower latency, packet loss risk)
+RTSP_TRANSPORT          = os.getenv("COGNEN_RTSP_TRANSPORT", "tcp")
+
+# OpenCV internal buffer size for live sources (1 = always read the newest frame)
+CAMERA_BUFFER_SIZE      = int(os.getenv("COGNEN_CAMERA_BUFFER", "1"))
+
 PERSON_CONF_THRESHOLD  = 0.40   # YOLOv8 person detection confidence
 OBJECT_CONF_THRESHOLD  = 0.25   # Object detection confidence
 POSE_CONF_THRESHOLD    = 0.40   # Keypoint confidence
