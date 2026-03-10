@@ -1,7 +1,9 @@
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 websockets>=12.0
-opencv-python-headless>=4.9.0
+# Use opencv-python (not headless) so macOS/Windows permission dialogs work.
+# On headless servers you can swap to opencv-python-headless>=4.9.0 instead.
+opencv-python>=4.9.0
 ultralytics>=8.2.0          # YOLOv8 (person, object, pose)
 torch>=2.2.0
 torchvision>=0.17.0

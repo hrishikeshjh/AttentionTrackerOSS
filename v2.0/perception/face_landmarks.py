@@ -1,8 +1,9 @@
 """
-face_landmarks.py — MediaPipe FaceMesh wrapper for v2.0.
+face_landmarks.py — MediaPipe FaceLandmarker wrapper for v2.0.
 
-Detects 468 facial landmarks per face and re-maps a 68-point subset that is
-compatible with the dlib/ibug convention used by features/face_metrics.py.
+Detects 478 facial landmarks per face (Tasks API) and re-maps a 68-point
+subset that is compatible with the dlib/ibug convention used by
+features/face_metrics.py.
 
 Reference mapping (MediaPipe → 68-point ibug landmark indices):
   Jaw:         0-16   → MP indices  10, 338, 297, 332, 284, 251, 389, 356,
@@ -20,12 +21,20 @@ Reference mapping (MediaPipe → 68-point ibug landmark indices):
 The mapping is approximate — face_metrics.py accesses specific point ranges
 (e.g. landmarks[36:42] for right eye) and only needs plausible geometry, not
 pixel-perfect dlib equivalence.
+
+Model
+-----
+Requires face_landmarker.task in the same directory as download_models.py
+(v2.0/models/).  Run download_models.py to fetch it automatically, or place
+the file there manually.
 """
 
 from __future__ import annotations
 import logging
+import urllib.request
 from dataclasses import dataclass
-from typing import Sequence
+from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -55,6 +64,35 @@ _MP_TO_68: list[int] = [
 
 assert len(_MP_TO_68) == 68, f"Landmark mapping has {len(_MP_TO_68)} entries, expected 68"
 
+# face_landmarker.task lives next to download_models.py
+_MODELS_DIR = Path(__file__).parent.parent / "models"
+_MODEL_FILE = _MODELS_DIR / "face_landmarker.task"
+# Official MediaPipe model bundle (float16, ~1 MB)
+_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+)
+
+
+def _ensure_model() -> Optional[Path]:
+    """Return path to face_landmarker.task, downloading if necessary."""
+    if _MODEL_FILE.exists():
+        return _MODEL_FILE
+    logger.info(
+        "face_landmarker.task not found — downloading from MediaPipe assets (~1 MB)..."
+    )
+    try:
+        _MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(_MODEL_URL, _MODEL_FILE)
+        logger.info("Downloaded face_landmarker.task to %s", _MODEL_FILE)
+        return _MODEL_FILE
+    except Exception as exc:
+        logger.error("Could not download face_landmarker.task: %s", exc)
+        logger.error(
+            "Download manually:\n  curl -o %s '%s'", _MODEL_FILE, _MODEL_URL
+        )
+        return None
+
 
 @dataclass
 class Point2D:
@@ -64,7 +102,8 @@ class Point2D:
 
 class FaceLandmarksDetector:
     """
-    Wraps MediaPipe FaceMesh to produce 68 (x, y) pixel landmarks per face.
+    Wraps MediaPipe FaceLandmarker (Tasks API) to produce 68 (x, y) pixel
+    landmarks per face.
 
     Usage
     -----
@@ -74,22 +113,39 @@ class FaceLandmarksDetector:
 
     def __init__(self, max_faces: int = 1) -> None:
         self._max_faces = max_faces
-        self._mesh = None
+        self._landmarker = None
         self._available = False
+        # Monotonically increasing timestamp (ms) required by VIDEO running mode
+        self._timestamp_ms: int = 0
         self._init()
 
     def _init(self) -> None:
         try:
             import mediapipe as mp  # type: ignore
-            self._mesh = mp.solutions.face_mesh.FaceMesh(
-                static_image_mode=False,
-                max_num_faces=self._max_faces,
-                refine_landmarks=False,
-                min_detection_confidence=0.5,
+            from mediapipe.tasks import python as mp_python  # type: ignore
+            from mediapipe.tasks.python import vision as mp_vision  # type: ignore
+
+            model_path = _ensure_model()
+            if model_path is None:
+                logger.warning(
+                    "FaceLandmarksDetector: model file unavailable — "
+                    "face metrics will be disabled."
+                )
+                return
+
+            options = mp_vision.FaceLandmarkerOptions(
+                base_options=mp_python.BaseOptions(
+                    model_asset_path=str(model_path)
+                ),
+                running_mode=mp_vision.RunningMode.VIDEO,
+                num_faces=self._max_faces,
+                min_face_detection_confidence=0.5,
+                min_face_presence_score=0.5,
                 min_tracking_confidence=0.5,
             )
+            self._landmarker = mp_vision.FaceLandmarker.create_from_options(options)
             self._available = True
-            logger.info("FaceLandmarksDetector: MediaPipe FaceMesh ready")
+            logger.info("FaceLandmarksDetector: MediaPipe FaceLandmarker ready")
         except ImportError:
             logger.warning(
                 "FaceLandmarksDetector: mediapipe not installed — "
@@ -107,28 +163,34 @@ class FaceLandmarksDetector:
         self, bgr_frame: np.ndarray
     ) -> list[list[Point2D]]:
         """
-        Run FaceMesh on *bgr_frame* and return up to *max_faces* sets of
+        Run FaceLandmarker on *bgr_frame* and return up to *max_faces* sets of
         68 landmarks in pixel coordinates.
 
         Returns an empty list if MediaPipe is unavailable or no face is found.
         """
-        if not self._available or self._mesh is None:
+        if not self._available or self._landmarker is None:
             return []
 
         import cv2  # type: ignore
+        import mediapipe as mp  # type: ignore
 
         h, w = bgr_frame.shape[:2]
         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-        result = self._mesh.process(rgb)
 
-        if not result.multi_face_landmarks:
+        # Tasks API requires an mp.Image and a monotonically increasing timestamp
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        self._timestamp_ms += 33  # ~30 FPS tick; any positive increment works
+
+        result = self._landmarker.detect_for_video(mp_image, self._timestamp_ms)
+
+        if not result.face_landmarks:
             return []
 
         output: list[list[Point2D]] = []
-        for face_lms in result.multi_face_landmarks:
-            pts = face_lms.landmark  # 468 NormalizedLandmark objects
+        for face_lms in result.face_landmarks:
+            # face_lms is a list of NormalizedLandmark with .x, .y (0-1)
             landmarks_68: list[Point2D] = [
-                Point2D(x=pts[idx].x * w, y=pts[idx].y * h)
+                Point2D(x=face_lms[idx].x * w, y=face_lms[idx].y * h)
                 for idx in _MP_TO_68
             ]
             output.append(landmarks_68)
@@ -136,6 +198,6 @@ class FaceLandmarksDetector:
         return output
 
     def close(self) -> None:
-        if self._mesh is not None:
-            self._mesh.close()
-            self._mesh = None
+        if self._landmarker is not None:
+            self._landmarker.close()
+            self._landmarker = None
