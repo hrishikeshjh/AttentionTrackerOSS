@@ -6,7 +6,10 @@ ultralytics>=8.2.0          # YOLOv8 (person, object, pose)
 torch>=2.2.0
 torchvision>=0.17.0
 numpy>=1.26.0
-onnxruntime-gpu>=1.18.0     # optional: GPU inference
+# ONNX Runtime — CPU build works on all platforms including Apple Silicon.
+# For NVIDIA GPU inference on Linux/Windows, replace with:
+#   pip install onnxruntime-gpu>=1.18.0
+onnxruntime>=1.18.0
 Pillow>=10.3.0
 pydantic>=2.7.0
 shapely>=2.0.3              # polygon IoU for seat zones

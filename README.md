@@ -312,6 +312,12 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r server/requirements.txt
 ```
 
+> **GPU acceleration (NVIDIA, Linux/Windows only)**
+> `requirements.txt` installs the CPU build of ONNX Runtime, which works on all platforms including Apple Silicon (CoreML is selected automatically). For NVIDIA GPU inference on Linux/Windows, install the GPU build after the base install:
+> ```bash
+> pip install onnxruntime-gpu>=1.18.0
+> ```
+
 ### 2. Download YOLO model weights
 
 ```bash

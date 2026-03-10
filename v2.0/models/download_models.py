@@ -1,16 +1,42 @@
 """
 download_models.py — Download YOLOv8 weights for v2.0 server.
 
-Run from the v2.0/ directory:
-    python3 models/download_models.py
+Run from the repo root or the v2.0/ directory:
+    python3 v2.0/models/download_models.py
+    # or
+    cd v2.0 && python3 models/download_models.py
 
 Requirements: ultralytics  (pip install ultralytics)
 """
 
+import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
 MODELS_DIR = Path(__file__).parent
+
+
+def _find_cached(model_name: str) -> Optional[Path]:
+    """
+    Search every location where ultralytics might have cached the weights.
+    The download destination has changed across ultralytics versions:
+      < 8.1  → cwd / model_name
+      8.1+   → ~/.config/Ultralytics/  (Linux/macOS)
+      8.1+   → %APPDATA%/Ultralytics/  (Windows)
+      some   → ~/.ultralytics/assets/
+    """
+    candidates = [
+        Path(model_name),                                           # cwd
+        Path.home() / ".config" / "Ultralytics" / model_name,     # 8.1+ macOS/Linux
+        Path.home() / "AppData" / "Roaming" / "Ultralytics" / model_name,  # Windows
+        Path.home() / ".ultralytics" / "assets" / model_name,     # older
+        Path.home() / ".cache"  / "ultralytics" / model_name,     # some builds
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
 
 
 def download(model_name: str, dest_name: str) -> None:
@@ -21,20 +47,15 @@ def download(model_name: str, dest_name: str) -> None:
     print(f"[download_models] Downloading {model_name} → {dest_name} ...")
     try:
         from ultralytics import YOLO  # type: ignore
-        model = YOLO(model_name)
-        # ultralytics downloads weights to the cwd; move them to models/
-        src = Path(model_name)
-        if src.exists():
-            src.rename(dest)
-        else:
-            # ultralytics may place it in a default cache; copy from there
-            import shutil
-            cache_path = Path.home() / ".ultralytics" / "assets" / model_name
-            if cache_path.exists():
-                shutil.copy(cache_path, dest)
-            else:
-                print(f"  WARNING: could not locate downloaded weights for {model_name}")
-                return
+        YOLO(model_name)   # triggers download into ultralytics cache
+
+        src = _find_cached(model_name)
+        if src is None:
+            print(f"  WARNING: could not locate downloaded weights for {model_name}")
+            print(f"  Search paths checked — copy {model_name} to {dest} manually.")
+            return
+
+        shutil.copy(src, dest)
         print(f"  Saved to {dest}")
     except ImportError:
         print("ERROR: ultralytics not installed. Run: pip install ultralytics")
