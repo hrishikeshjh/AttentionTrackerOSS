@@ -227,6 +227,8 @@ class RoomAnalyzer:
         x1, y1, x2, y2 = (int(v) for v in track.bbox_xyxy)
         face_crop = frame[y1:y2, x1:x2]
         fh, fw = face_crop.shape[:2]
+        fh_total, fw_total = frame.shape[:2]
+        bbox_face_area = ((x2 - x1) * (y2 - y1)) / max(fw_total * fh_total, 1)
 
         # Face landmarks (placeholder — integrate face_alignment / dlib here)
         landmarks = self._get_landmarks(face_crop)
@@ -253,7 +255,7 @@ class RoomAnalyzer:
             fidget_score=state.pose_tracker.fidget(),
             head_pose_stability=state.pose_tracker.stability(),
             face_distance=None,
-            face_area=None,
+            face_area=bbox_face_area,
             mouth_openness=None,
             ear_variance=ear_var,
             pose_variance=state.pose_tracker.pose_variance(),

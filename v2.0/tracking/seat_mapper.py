@@ -50,16 +50,26 @@ class SeatMapper:
         for track in tracks:
             x1, y1, x2, y2 = track.bbox_xyxy
             person_box = shapely_box(x1, y1, x2, y2)
+            # Centre of the person's bounding box in pixel space
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
 
             for seat_id, seat_poly in self._seat_polygons.items():
-                intersection = person_box.intersection(seat_poly).area
-                union = person_box.union(seat_poly).area
-                iou = intersection / union if union > 0 else 0.0
+                # Primary: centre-point containment (works for both CCTV and
+                # close-up webcam where IoU of a large bbox is low).
+                from shapely.geometry import Point
+                if seat_poly.contains(Point(cx, cy)):
+                    score = 1.0  # prefer centroid-matched seats
+                else:
+                    # Fallback: IoU for partial overlaps (e.g. person at seat edge)
+                    intersection = person_box.intersection(seat_poly).area
+                    union = person_box.union(seat_poly).area
+                    score = intersection / union if union > 0 else 0.0
+                    if score < SEAT_IOU_THRESHOLD:
+                        continue
 
-                if iou >= SEAT_IOU_THRESHOLD:
-                    prev_iou, _ = seat_best.get(seat_id, (0.0, -1))
-                    if iou > prev_iou:
-                        seat_best[seat_id] = (iou, track.track_id)
+                prev_score, _ = seat_best.get(seat_id, (0.0, -1))
+                if score > prev_score:
+                    seat_best[seat_id] = (score, track.track_id)
 
         return [
             SeatStatus(
