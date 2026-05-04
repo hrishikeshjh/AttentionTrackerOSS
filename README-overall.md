@@ -10,6 +10,7 @@
 
 ## Table of Contents
 
+- [Novel Algorithmic Contributions](#novel-algorithmic-contributions)
 1. [System Comparison](#1-system-comparison)
 2. [Key Features](#2-key-features)
 3. [Architecture Diagrams](#3-architecture-diagrams)
@@ -21,6 +22,27 @@
 9. [Build and Run — v2.0 (Server)](#9-build-and-run--v20-server)
 10. [Testing & Evaluation](#10-testing--evaluation)
 11. [Privacy & Security](#11-privacy--security)
+
+---
+
+## Novel Algorithmic Contributions
+
+While this system utilizes existing state-of-the-art perception models (e.g., YOLOv8, MediaPipe) for foundational feature extraction, the core scientific contributions lie in the custom algorithmic pipelines and mathematical formulations designed specifically for cognitive engagement monitoring.
+
+### 1. The Context-Gate Override Algorithm
+A novel post-processing algorithm that intercepts the output of a neural network (the 1D-CNN temporal classifier) and modifies its probabilities based on deterministic spatial heuristics. It resolves behavioral ambiguities by mathematically compressing confidence scores when context is unclear, or artificially boosting/suppressing specific classes (e.g., prioritizing `using_phone` over `attentive_reading` when a phone object and hand interaction are detected in close proximity).
+
+### 2. Asymmetric "ConfusionPenaltyLoss" Function
+An asymmetric loss function algorithm designed to optimize the temporal classifier by minimizing high-cost pedagogical misclassifications. It applies custom mathematical penalties based on the real-world cost of a mistake—for instance, applying a `3.0×` penalty multiplier if the model predicts "reading" when the student is actually hiding a "phone", while applying standard `1.0×` multipliers for less critical errors.
+
+### 3. Context-Aware Attention Scoring & Fusion Formula
+A multimodal feature fusion algorithm that normalizes and combines 13–16 disparate signals (including Eye Aspect Ratio, Head Pose, Object One-Hots, and Proximity Codes). The algorithm applies specific domain-tuned weights to each feature (e.g., `gazeDeviation: 0.12`, `temporalPattern: 0.03`) and smooths the final 0–100 engagement score over time using an Exponential Moving Average (EMA) with a decay factor of `α=0.15`.
+
+### 4. Prioritized Seat Mapping Assignment Algorithm (v2.0)
+A specialized spatial algorithm that maps tracked bounding boxes to physical classroom seats in multi-person environments. It utilizes a three-step prioritization logic based on Shapely polygons: (1) Primary validation via centroid containment, (2) Fallback validation using Intersection over Union (IoU ≥ 0.30), and (3) A tie-breaker heuristic for overlapping detections.
+
+### 5. Fatigue Onset Detection Algorithm (v1.0)
+A rolling-window statistical algorithm for the early detection of cognitive fatigue. It employs Ordinary Least Squares (OLS) linear regression to calculate the degradation slope of the attention score. Anomalies are triggered based on a composite condition requiring a negative slope (`< -0.5`), high confidence (`R² > 0.4`), and an average score drop below a defined threshold (`< 60`).
 
 ---
 
