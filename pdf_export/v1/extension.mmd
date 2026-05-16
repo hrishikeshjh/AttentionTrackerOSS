@@ -1,0 +1,5 @@
+flowchart LR
+    POP["popup.js<br/>(UI)"] --> BG["background.js<br/>(Service Worker)"]
+    BG --> CT["content.js<br/>(Meet Inject)"]
+    CT --> OS["offscreen.js<br/>(Standalone)"]
+    OS --> MLC["ml-core.js<br/>(ML Engine)"]

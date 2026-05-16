@@ -1,0 +1,17 @@
+flowchart LR
+    A["Webcam<br/>640×480 @ 5 FPS"] --> B["face-api.js<br/>TinyFaceDetector"]
+    B --> C["68-pt Landmarks"]
+    C --> D["FaceMetricsAggregator<br/>EAR · MAR · Gaze<br/>Head Pose · Blink<br/>Fatigue · PERCLOS"]
+
+    A --> E["YOLOv8-nano ONNX<br/>every 3rd frame"]
+    E --> F["Detected Objects<br/>book · phone · laptop"]
+
+    A --> G["MediaPipe Hands<br/>every 3rd frame"]
+    G --> H["Hand–Object<br/>Proximity"]
+
+    D & F & H --> I["Feature Fusion<br/>13-dim vector"]
+    I --> J["TemporalBehaviorClassifier<br/>1D-CNN · 15-frame window"]
+    J --> K["Context-Gate<br/>Override"]
+    K --> L["MLEngine<br/>Context-Aware Scoring<br/>EMA α=0.15"]
+    L --> M["Attention Score 0–100<br/>Behavior Label"]
+    M --> N["Dashboard<br/>+ Firebase + PDF"]

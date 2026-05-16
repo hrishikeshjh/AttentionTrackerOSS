@@ -1,0 +1,35 @@
+flowchart TD
+    subgraph Input["Input Layer"]
+        WC["Webcam 640×480<br/>@ 5 FPS"]
+    end
+
+    subgraph Perception["Perception Layer"]
+        FD["face-api.js<br/>TinyFaceDetector<br/>320px · ~150ms"]
+        LM["68-Point<br/>Landmarks"]
+        OD["YOLOv8-nano<br/>ONNX Runtime Web<br/>WebGPU → WASM"]
+        HT["MediaPipe Hands<br/>Lite model<br/>21 keypoints × 2"]
+    end
+
+    subgraph Features["Feature Extraction"]
+        FMA["FaceMetricsAggregator<br/>EAR · MAR · Gaze<br/>Head Pose · PERCLOS<br/>Fatigue · Fidget"]
+        HOP["HandObjectProximity<br/>Detector"]
+    end
+
+    subgraph Inference["Behavior Inference"]
+        TC["TemporalBehaviorClassifier<br/>15-frame window<br/>Rule-based + ONNX 1D-CNN"]
+        CG["Context-Gate Override"]
+        ML["MLEngine<br/>Weighted scoring<br/>EMA α=0.15"]
+    end
+
+    subgraph Output["Output Layer"]
+        DASH["Dashboard<br/>Charts · Summary"]
+        FB["Firebase<br/>Firestore"]
+        PDF["Genkit + Gemini<br/>PDF Report"]
+    end
+
+    WC --> FD --> LM --> FMA
+    WC --> OD
+    WC --> HT
+    OD & HT --> HOP
+    FMA & HOP --> TC --> CG --> ML
+    ML --> DASH & FB & PDF

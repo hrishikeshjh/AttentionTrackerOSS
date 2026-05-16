@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant W as Webcam
+    participant FD as face-api.js
+    participant OD as ObjectDetector
+    participant HT as HandTracker
+    participant FMA as FaceMetrics
+    participant HOP as HandObjectProximity
+    participant TC as TemporalClassifier
+    participant ML as MLEngine
+    participant UI as Dashboard
+
+    W->>FD: frame (every 200ms)
+    FD->>FMA: 68 landmarks
+    FMA->>FMA: compute EAR, MAR, gaze, head pose, PERCLOS, fatigue
+    
+    alt Every 3rd frame
+        W->>OD: frame → ONNX inference
+        OD-->>HOP: detected objects (book/phone/laptop)
+        W->>HT: frame → MediaPipe
+        HT-->>HOP: hand landmarks (21 × 2)
+        HOP->>HOP: compute proximity signal
+    end
+
+    FMA-->>TC: extended metrics
+    HOP-->>TC: hand-object proximity
+    TC->>TC: append to 15-frame buffer
+    TC->>TC: classify behavior (rule-based or 1D-CNN)
+    TC-->>ML: BehaviorResult
+    ML->>ML: context-aware weighted scoring + EMA
+    ML-->>UI: attentionScore + attentionState

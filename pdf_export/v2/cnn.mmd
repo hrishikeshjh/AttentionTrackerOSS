@@ -1,0 +1,7 @@
+flowchart LR
+    IN["Input<br/>(B, 13, 15)"] --> C1["Conv1D 13→32<br/>k=3, pad=1<br/>+ BN + ReLU"]
+    C1 --> C2["Conv1D 32→64<br/>k=3, pad=1<br/>+ BN + ReLU<br/>+ Dropout 0.2"]
+    C2 --> C3["Conv1D 64→64<br/>k=3, pad=1<br/>+ BN + ReLU"]
+    C3 --> GAP["AdaptiveAvgPool1d(1)<br/>(B, 64)"]
+    GAP --> FC["Linear 64→6"]
+    FC --> OUT["Logits (6 classes)"]

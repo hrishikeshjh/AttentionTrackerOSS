@@ -1,0 +1,22 @@
+flowchart TD
+    SRC["Video Source<br/>RTSP · File · Camera"] --> GRAB["Frame Grabber<br/>process every N frames"]
+    GRAB --> P1["YOLOv8-m<br/>Person Detection"]
+    GRAB --> P2["YOLOv8-s<br/>Object Detection"]
+    GRAB --> P3["YOLOv8-pose<br/>17 Keypoints"]
+
+    P1 & P2 & P3 --> FUSE["Detection Fusion<br/>associate objects+pose<br/>with person bboxes"]
+    FUSE --> BT["ByteTrack<br/>persistent track IDs"]
+    BT --> SM["SeatMapper<br/>Shapely polygon IoU"]
+
+    SM --> LOOP["Per-Person Loop × N"]
+    LOOP --> FL["Face Crop → MediaPipe<br/>FaceMesh → 68-pt ibug"]
+    LOOP --> FM["FaceMetrics<br/>EAR · PERCLOS · Gaze<br/>Head Pose · Fatigue"]
+    LOOP --> PA["PostureAnalysis<br/>torso angle · head drop"]
+    LOOP --> OI["Object Interaction<br/>book · phone proximity"]
+
+    FL & FM & PA & OI --> FF["Feature Fusion<br/>13-dim vector / frame"]
+    FF --> TC["TemporalClassifier<br/>1D-CNN · 15-frame window<br/>+ context-gate"]
+    TC --> BL["Behavior Label<br/>+ Attention Score"]
+
+    BL --> RA["Room Analytics<br/>per-seat occupancy<br/>room attention mean"]
+    RA --> WS["WebSocket 5 Hz<br/>→ Dashboard"]
