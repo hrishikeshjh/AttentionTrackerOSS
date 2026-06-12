@@ -339,12 +339,34 @@ def main():
     print("Converting Working.jpeg to PDF page...")
     from PIL import Image
     img = Image.open(img_working)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
     
+    # Rotate 90 degrees counter-clockwise to fit landscape image onto portrait page horizontally
+    img_rot = img.rotate(90, expand=True)
+    
+    # Target exact A4 page size in pixels at 300 DPI to yield 595.92 x 841.92 points:
+    # 595.92 / 72 * 300 = 2483 pixels width
+    # 841.92 / 72 * 300 = 3508 pixels height
+    target_w, target_h = 2483, 3508
+    bg = Image.new("RGB", (target_w, target_h), "white")
+    
+    # Calculate scale to fit within canvas
+    scale = min(target_w / img_rot.width, target_h / img_rot.height)
+    new_w = int(img_rot.width * scale)
+    new_h = int(img_rot.height * scale)
+    
+    # Resize image
+    img_resized = img_rot.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
+    # Paste centered on the white background
+    x = (target_w - new_w) // 2
+    y = (target_h - new_h) // 2
+    bg.paste(img_resized, (x, y))
+    
+    # Save as PDF with 300 DPI resolution
     img_pdf_io = io.BytesIO()
-    img.save(img_pdf_io, format="PDF")
+    bg.save(img_pdf_io, format="PDF", resolution=300.0)
     img_pdf_bytes = img_pdf_io.getvalue()
+    
     img_reader = PdfReader(io.BytesIO(img_pdf_bytes))
     img_page = img_reader.pages[0]
 
