@@ -127,10 +127,11 @@ def build_toc_pdf(sections: list[dict]) -> bytes:
     # ---- Section rows ----
     section_colors = [
         (0.18, 0.42, 0.82),   # blue
+        (0.88, 0.52, 0.08),   # orange/amber
         (0.10, 0.62, 0.48),   # teal
         (0.62, 0.28, 0.84),   # purple
     ]
-    section_numbers = ["01", "02", "03"]
+    section_numbers = ["01", "02", "03", "04"]
 
     row_start_y = toc_header_y - 26
     card_h = 38
@@ -318,6 +319,7 @@ def main():
     pdf_overall = base / "README-overall.pdf"
     pdf_v1      = base / "README-v1.0.pdf"
     pdf_v2      = base / "README-v2.0.pdf"
+    img_working = base / "Working.jpeg"
     output_pdf  = base / "CognEn-Complete-Documentation.pdf"
 
     # Read page counts
@@ -333,16 +335,32 @@ def main():
     print(f"v1.0:    {pages_v1} pages")
     print(f"v2.0:    {pages_v2} pages")
 
+    # Convert Working.jpeg to PDF page bytes using Pillow
+    print("Converting Working.jpeg to PDF page...")
+    from PIL import Image
+    img = Image.open(img_working)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    
+    img_pdf_io = io.BytesIO()
+    img.save(img_pdf_io, format="PDF")
+    img_pdf_bytes = img_pdf_io.getvalue()
+    img_reader = PdfReader(io.BytesIO(img_pdf_bytes))
+    img_page = img_reader.pages[0]
+
     # TOC page will be page 1.
     # Overall starts at page 2 (1-indexed).
-    # v1.0 starts after overall.
+    # Working.jpeg will be inserted right after overall, becoming page 16.
+    # v1.0 starts at page 17.
     # v2.0 starts after v1.0.
     start_overall = 2
-    start_v1      = start_overall + pages_overall
+    start_working = start_overall + pages_overall
+    start_v1      = start_working + 1
     start_v2      = start_v1 + pages_v1
 
     sections = [
         {"title": "Overall Documentation",     "start_page": start_overall},
+        {"title": "System Flow (Working)",      "start_page": start_working},
         {"title": "Version 1.0 Documentation", "start_page": start_v1},
         {"title": "Version 2.0 Documentation", "start_page": start_v2},
     ]
@@ -354,10 +372,16 @@ def main():
     print("Merging PDFs...")
     writer = PdfWriter()
 
-    # Collect all source pages in order (TOC first, then each section)
+    # Collect all source pages in order:
+    # 1. TOC (1 page)
+    # 2. Overall (pages_overall pages)
+    # 3. Working.jpeg (1 page)
+    # 4. v1.0 (pages_v1 pages)
+    # 5. v2.0 (pages_v2 pages)
     all_source_pages = (
         [toc_reader.pages[0]]
         + list(reader_overall.pages)
+        + [img_page]
         + list(reader_v1.pages)
         + list(reader_v2.pages)
     )
@@ -382,25 +406,27 @@ def main():
     # Add named bookmarks/outlines
     writer.add_outline_item("Table of Contents",         0)
     writer.add_outline_item("Overall Documentation",     1)
-    writer.add_outline_item("Version 1.0 Documentation", 1 + pages_overall)
-    writer.add_outline_item("Version 2.0 Documentation", 1 + pages_overall + pages_v1)
+    writer.add_outline_item("System Flow (Working)",      1 + pages_overall)
+    writer.add_outline_item("Version 1.0 Documentation", 2 + pages_overall)
+    writer.add_outline_item("Version 2.0 Documentation", 2 + pages_overall + pages_v1)
 
     # Set PDF metadata
     writer.add_metadata({
         "/Title":   "CognEn-VCSir Complete Documentation",
         "/Author":  "CognEn-VCSir",
-        "/Subject": "Overall + v1.0 + v2.0 Documentation",
+        "/Subject": "Overall + Working Diagram + v1.0 + v2.0 Documentation",
         "/Creator": "merge_pdfs.py",
     })
 
     with open(output_pdf, "wb") as f:
         writer.write(f)
 
-    total = 1 + pages_overall + pages_v1 + pages_v2
+    total = 2 + pages_overall + pages_v1 + pages_v2
     print(f"\n✅ Done! Merged PDF saved to: {output_pdf}")
     print(f"   Total pages: {total}")
     print(f"   Page 1          → Table of Contents")
-    print(f"   Pages 2–{start_v1 - 1:<4}   → Overall Documentation ({pages_overall} pages)")
+    print(f"   Pages 2–{start_working - 1:<4}   → Overall Documentation ({pages_overall} pages)")
+    print(f"   Page {start_working:<11} → System Flow (Working.jpeg)")
     print(f"   Pages {start_v1}–{start_v2 - 1:<4}  → v1.0 Documentation ({pages_v1} pages)")
     print(f"   Pages {start_v2}–{total:<4}  → v2.0 Documentation ({pages_v2} pages)")
 

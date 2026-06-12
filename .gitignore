@@ -11,3 +11,7 @@ __pycache__
 *.pt
 *.onnx
 *.task
+
+# Virtual environments
+.venv/
+
