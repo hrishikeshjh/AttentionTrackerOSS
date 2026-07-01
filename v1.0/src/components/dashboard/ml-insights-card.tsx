@@ -130,7 +130,7 @@ export default function MLInsightsCard({ prediction, analytics, sessionActive }:
     // Get top feature contributions
     const topFeatures = prediction
         ? Object.entries(prediction.featureContributions)
-            .filter(([_, value]) => Math.abs(value) > 0.01)
+            .filter(([, value]) => Math.abs(value) > 0.01)
             .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
             .slice(0, 5)
         : [];

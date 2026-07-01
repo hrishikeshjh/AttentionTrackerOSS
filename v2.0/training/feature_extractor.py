@@ -29,6 +29,7 @@ Feature vector (FEATURE_DIM = 13):
 """
 
 from __future__ import annotations
+
 import sys
 from pathlib import Path
 
@@ -36,7 +37,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from features.face_metrics import FaceMetricsResult
-from features.feature_vector import encode_feature_vector, FEATURE_DIM
+from features.feature_vector import FEATURE_DIM, encode_feature_vector
 
 __all__ = ["extract_feature_vector", "build_input_tensor", "FEATURE_DIM"]
 

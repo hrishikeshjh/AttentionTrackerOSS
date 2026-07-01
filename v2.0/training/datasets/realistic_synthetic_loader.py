@@ -24,15 +24,18 @@ Feature vector (13 dims, index order fixed):
 """
 
 from __future__ import annotations
-import numpy as np
+
+from dataclasses import dataclass
 from typing import Generator
 
+import numpy as np
+
 from training.datasets.base_dataset import (
-    BaseBehaviorDataset,
     BEHAVIOR_CLASSES,
     CLASS_TO_IDX,
     FEATURE_DIM,
     WINDOW_SIZE,
+    BaseBehaviorDataset,
 )
 
 # ── Per-class feature distributions ───────────────────────────────────────────
@@ -75,27 +78,42 @@ _RHO: np.ndarray = np.array([
 ], dtype=np.float32)
 
 
+@dataclass(slots=True)
 class _ClassSpec:
     """
     Parameterises the generative distribution for one behavior class.
-    """
-    __slots__ = (
-        "gaze_x_mu", "gaze_x_sd",
-        "gaze_y_mu", "gaze_y_sd",
-        "pitch_mu",  "pitch_sd",
-        "yaw_mu",    "yaw_sd",
-        "ear_mu",    "ear_sd",
-        "perc_mu",   "perc_sd",
-        "stab_mu",   "stab_sd",
-        "fidget_mu", "fidget_sd",
-        "p_book", "p_phone", "p_laptop",
-        "prox_when_book", "prox_when_phone", "prox_baseline",
-        "noise_scale",
-    )
 
-    def __init__(self, **kw):
-        for k, v in kw.items():
-            setattr(self, k, v)
+    Was a __slots__ + **kwargs/setattr class -- mypy can't verify
+    attribute existence/types through setattr, which was the source of 20
+    of this module's mypy findings (every _SPECS[...] construction site
+    and every attribute read). A dataclass with explicit typed fields is a
+    mechanical, behavior-preserving fix: same call sites (all _SPECS
+    entries already use named kwargs matching these field names), same
+    memory layout (slots=True), now with real static verification.
+    """
+    gaze_x_mu: float
+    gaze_x_sd: float
+    gaze_y_mu: float
+    gaze_y_sd: float
+    pitch_mu: float
+    pitch_sd: float
+    yaw_mu: float
+    yaw_sd: float
+    ear_mu: float
+    ear_sd: float
+    perc_mu: float
+    perc_sd: float
+    stab_mu: float
+    stab_sd: float
+    fidget_mu: float
+    fidget_sd: float
+    p_book: float
+    p_phone: float
+    p_laptop: float
+    prox_when_book: float
+    prox_when_phone: float
+    prox_baseline: float
+    noise_scale: float
 
 
 # Class distributions — carefully calibrated to match biometric observations

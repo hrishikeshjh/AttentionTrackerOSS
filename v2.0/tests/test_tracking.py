@@ -4,11 +4,11 @@ Run: pytest v2.0/tests/test_tracking.py
 """
 
 import sys
+
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 
-from tracking.seat_mapper import SeatMapper
 from tracking.byte_tracker import Track
-
+from tracking.seat_mapper import SeatMapper
 
 SEAT_MAP = {
     "seat_1": [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]],

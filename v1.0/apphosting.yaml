@@ -5,3 +5,32 @@ runConfig:
   # Increase this value if you'd like to automatically spin up
   # more instances in response to increased traffic.
   maxInstances: 1
+
+env:
+  # Firebase Web SDK config -- not secret (see src/lib/firebase.ts), safe
+  # as plaintext here. Previously hardcoded in firebase.ts; now sourced
+  # from these declared env vars for environment flexibility.
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
+    value: "AIzaSyA7CxVTz00XIAqViDmbAr92TDYiTotGda4"
+    availability: [BUILD, RUNTIME]
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+    value: "studio-8196614962-36180.firebaseapp.com"
+    availability: [BUILD, RUNTIME]
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: "studio-8196614962-36180"
+    availability: [BUILD, RUNTIME]
+  - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+    value: "studio-8196614962-36180.firebasestorage.app"
+    availability: [BUILD, RUNTIME]
+  - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+    value: "240470473825"
+    availability: [BUILD, RUNTIME]
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    value: "1:240470473825:web:66da9a692dfd810720fe20"
+    availability: [BUILD, RUNTIME]
+  # GEMINI_API_KEY IS secret -- set it via Secret Manager, not here:
+  #   firebase apphosting:secrets:set GEMINI_API_KEY
+  # then reference it:
+  # - variable: GEMINI_API_KEY
+  #   secret: GEMINI_API_KEY
+  #   availability: [RUNTIME]

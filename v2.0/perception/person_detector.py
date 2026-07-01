@@ -6,10 +6,13 @@ Output: list of normalized [cx, cy, w, h] bounding boxes + confidence.
 """
 
 from __future__ import annotations
-import numpy as np
+
 from dataclasses import dataclass
+
+import numpy as np
 from ultralytics import YOLO
-from server.config import PERSON_DETECTOR_MODEL, PERSON_CONF_THRESHOLD
+
+from server.config import PERSON_CONF_THRESHOLD, PERSON_DETECTOR_MODEL, require_model_file
 
 
 @dataclass
@@ -25,7 +28,7 @@ class PersonDetector:
     """
 
     def __init__(self):
-        self.model = YOLO(str(PERSON_DETECTOR_MODEL))
+        self.model = YOLO(str(require_model_file(PERSON_DETECTOR_MODEL)))
         self.model.overrides["verbose"] = False
 
     def detect(self, frame: np.ndarray) -> list[PersonDetection]:

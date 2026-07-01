@@ -17,6 +17,7 @@ Usage:
 """
 
 from __future__ import annotations
+
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -25,7 +26,7 @@ from typing import Sequence
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from training.datasets.base_dataset import BEHAVIOR_CLASSES, CLASS_TO_IDX
+from training.datasets.base_dataset import BEHAVIOR_CLASSES
 
 NUM_CLASSES = len(BEHAVIOR_CLASSES)
 

@@ -13,6 +13,7 @@ backwards compatibility and wraps an RTSPSource internally.
 """
 
 from __future__ import annotations
+
 import asyncio
 import logging
 import time
@@ -21,25 +22,32 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from perception.person_detector   import PersonDetector
-from perception.object_detector   import ObjectDetector
-from perception.pose_estimator    import PoseEstimator, PoseDetection
-from perception.face_landmarks    import FaceLandmarksDetector
-from tracking.byte_tracker       import ByteTrackWrapper, Track
-from tracking.seat_mapper        import SeatMapper
-from features.face_metrics       import (
-    BlinkDetector, HeadPoseTracker, FatigueCalculator,
-    calculate_ear, calculate_mar, calculate_head_pose, calculate_gaze,
+from features.face_metrics import (
+    BlinkDetector,
     FaceMetricsResult,
+    FatigueCalculator,
+    HeadPoseTracker,
+    calculate_ear,
+    calculate_gaze,
+    calculate_head_pose,
+    calculate_mar,
 )
-from inference.contradiction_detector import ContradictionDetector
 from inference.behavior_classifier import BehaviorClassifier, BehaviorResult
+from inference.contradiction_detector import ContradictionDetector
 from input.frame_source import FrameSource, RTSPSource
+from perception.face_landmarks import FaceLandmarksDetector
+from perception.object_detector import ObjectDetector
+from perception.person_detector import PersonDetector
+from perception.pose_estimator import PoseDetection, PoseEstimator
 from server.config import (
-    INPUT_WIDTH, INPUT_HEIGHT, TARGET_FPS,
     BEHAVIOR_CLASSIFIER_MODEL,
+    INPUT_HEIGHT,
+    INPUT_WIDTH,
     PROCESS_EVERY_N_FRAMES,
+    TARGET_FPS,
 )
+from tracking.byte_tracker import ByteTrackWrapper, Track
+from tracking.seat_mapper import SeatMapper
 
 logger = logging.getLogger("cognen.analyzer")
 

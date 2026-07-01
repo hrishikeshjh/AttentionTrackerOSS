@@ -9,13 +9,14 @@ numpy + features/face_metrics.py (stdlib math).
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pytest
 
-from features.feature_vector import encode_feature_vector, extract_feature_vector_from_landmarks, FEATURE_DIM
 from features.face_metrics import Point2D
+from features.feature_vector import FEATURE_DIM, encode_feature_vector, extract_feature_vector_from_landmarks
 
 
 def _synthetic_landmarks(nose=(50, 55), l_eye=(40, 50), r_eye=(60, 50), chin=(50, 90)):
@@ -88,8 +89,8 @@ class TestCrossModuleConsistency:
     generator, and inference-time extraction must all agree on units."""
 
     def test_feature_extractor_shim_matches_canonical_encoder(self):
-        from training.feature_extractor import extract_feature_vector
         from features.face_metrics import FaceMetricsResult
+        from training.feature_extractor import extract_feature_vector
 
         metrics = FaceMetricsResult(
             ear=0.30, mar=0.02, pitch=-45.0, yaw=30.0, roll=0.0,

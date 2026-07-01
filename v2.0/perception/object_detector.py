@@ -7,10 +7,13 @@ Model must be fine-tuned on COCO (at minimum book/phone/laptop classes).
 """
 
 from __future__ import annotations
-import numpy as np
+
 from dataclasses import dataclass
+
+import numpy as np
 from ultralytics import YOLO
-from server.config import OBJECT_DETECTOR_MODEL, OBJECT_CONF_THRESHOLD
+
+from server.config import OBJECT_CONF_THRESHOLD, OBJECT_DETECTOR_MODEL, require_model_file
 
 # COCO class IDs relevant to study context (0-indexed)
 STUDY_CLASSES = {
@@ -32,7 +35,7 @@ class ObjectDetection:
 
 class ObjectDetector:
     def __init__(self, frame_w: int, frame_h: int):
-        self.model = YOLO(str(OBJECT_DETECTOR_MODEL))
+        self.model = YOLO(str(require_model_file(OBJECT_DETECTOR_MODEL)))
         self.model.overrides["verbose"] = False
         self.fw = frame_w
         self.fh = frame_h

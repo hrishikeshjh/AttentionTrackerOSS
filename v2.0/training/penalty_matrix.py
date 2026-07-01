@@ -42,6 +42,7 @@ fixes is the previous state where 27 of 30 off-diagonal cells were silent
 """
 
 from __future__ import annotations
+
 import numpy as np
 
 from training.datasets.base_dataset import BEHAVIOR_CLASSES, CLASS_TO_IDX

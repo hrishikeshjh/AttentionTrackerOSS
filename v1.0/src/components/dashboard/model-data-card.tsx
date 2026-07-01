@@ -8,7 +8,6 @@ import {
   Smile,
   GitBranch,
   Gauge,
-  FileJson,
   Activity,
   Zap,
   Target,

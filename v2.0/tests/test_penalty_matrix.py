@@ -7,12 +7,13 @@ No torch needed -- pure numpy.
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 
-from training.penalty_matrix import build_penalty_matrix, penalty_rationale, NUM_CLASSES, _PENALTY_SPEC
 from training.datasets.base_dataset import CLASS_TO_IDX
+from training.penalty_matrix import _PENALTY_SPEC, NUM_CLASSES, build_penalty_matrix, penalty_rationale
 
 
 def test_matrix_shape():

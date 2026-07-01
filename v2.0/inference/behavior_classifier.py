@@ -7,10 +7,12 @@ Rule-based by default; plugs in ONNX 1D-CNN when model file is present.
 """
 
 from __future__ import annotations
-import numpy as np
+
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
 
 BEHAVIOR_LABELS = [
     "attentive_screen",
@@ -148,13 +150,18 @@ class BehaviorClassifier:
         gx, gy, pn, _, ear, perclos, stab, book, phone, _, _, _, prox = arr
         pitch = pn * 90
 
-        if ear < 0.22 and perclos > 0.2:                return self._make("drowsy", 0.88)
+        if ear < 0.22 and perclos > 0.2:
+            return self._make("drowsy", 0.88)
         # prox >= 0.9 means holding_phone (1.0 in new scale)
-        if phone > 0.5 and prox >= 0.9:                 return self._make("using_phone", 0.90)
-        if phone > 0.5 and pitch < -15:                 return self._make("using_phone", 0.83)
+        if phone > 0.5 and prox >= 0.9:
+            return self._make("using_phone", 0.90)
+        if phone > 0.5 and pitch < -15:
+            return self._make("using_phone", 0.83)
         # prox >= 0.7 means holding_book (0.75 in new scale)
-        if book > 0.5 and prox >= 0.7 and phone < 0.1: return self._make("attentive_reading", 0.88)
-        if book > 0.5 and pitch < -15:                  return self._make("attentive_reading", 0.82)
+        if book > 0.5 and prox >= 0.7 and phone < 0.1:
+            return self._make("attentive_reading", 0.88)
+        if book > 0.5 and pitch < -15:
+            return self._make("attentive_reading", 0.82)
         gaze_dev = (gx**2 + gy**2)**0.5
         if gaze_dev < 0.3 and abs(pitch) < 15 and stab > 0.6:
             return self._make("attentive_screen", 0.78)

@@ -26,11 +26,11 @@ Each frame_gt / frame_pred is a list of Track objects (or dicts) with:
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-
 
 # ── Targets ───────────────────────────────────────────────────────────────────
 

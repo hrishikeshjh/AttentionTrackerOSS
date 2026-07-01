@@ -27,7 +27,7 @@ Usage:
 """
 
 from __future__ import annotations
-import csv
+
 import logging
 from pathlib import Path
 from typing import Generator
@@ -102,9 +102,9 @@ class OpenImagesObjectDataset:
         output_path = Path(output_path)
         lines = [
             f"path: {self.root}",
-            f"train: images/train",
-            f"val:   images/val",
-            f"test:  images/test",
+            "train: images/train",
+            "val:   images/val",
+            "test:  images/test",
             "",
             f"nc: {len(self.CLASSES)}",
             f"names: {self.CLASSES}",

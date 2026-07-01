@@ -7,9 +7,13 @@ A person is assigned to a seat when IoU(person_bbox, seat_polygon) > threshold.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from shapely.geometry import box as shapely_box, Polygon
-from server.config import SEAT_IOU_THRESHOLD, INPUT_WIDTH, INPUT_HEIGHT
+
+from dataclasses import dataclass
+
+from shapely.geometry import Polygon
+from shapely.geometry import box as shapely_box
+
+from server.config import INPUT_HEIGHT, INPUT_WIDTH, SEAT_IOU_THRESHOLD
 
 
 @dataclass

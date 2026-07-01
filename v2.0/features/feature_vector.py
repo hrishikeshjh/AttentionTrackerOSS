@@ -38,11 +38,12 @@ Canonical feature vector (FEATURE_DIM = 13, index order fixed):
 """
 
 from __future__ import annotations
+
 from typing import Sequence
 
 import numpy as np
 
-from features.face_metrics import calculate_ear, calculate_head_pose, calculate_gaze
+from features.face_metrics import calculate_ear, calculate_gaze, calculate_head_pose
 
 FEATURE_DIM = 13
 

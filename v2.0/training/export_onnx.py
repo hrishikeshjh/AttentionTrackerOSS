@@ -16,6 +16,7 @@ ONNX opset: 17 (supported by onnxruntime ≥ 1.15 and onnxruntime-web ≥ 1.16).
 """
 
 from __future__ import annotations
+
 import argparse
 import logging
 import sys
@@ -43,7 +44,8 @@ def export_onnx(
         Path to the written ONNX file.
     """
     import torch
-    from training.model import BehaviorClassifierCNN, FEATURE_DIM, WINDOW_SIZE
+
+    from training.model import FEATURE_DIM, WINDOW_SIZE, BehaviorClassifierCNN
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,8 +88,9 @@ def verify_onnx_runtime(onnx_path: str, device: str = "cpu") -> None:
     Run a quick inference check with onnxruntime to verify the exported model.
     """
     try:
-        import onnxruntime as ort
         import numpy as np
+        import onnxruntime as ort
+
         from training.model import FEATURE_DIM, WINDOW_SIZE
 
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device == "cuda" \

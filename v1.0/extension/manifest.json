@@ -14,8 +14,7 @@
   "host_permissions": [
     "https://meet.google.com/*",
     "https://*.zoom.us/*",
-    "https://teams.microsoft.com/*",
-    "<all_urls>"
+    "https://teams.microsoft.com/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",

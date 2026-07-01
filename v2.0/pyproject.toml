@@ -1,0 +1,35 @@
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+exclude = ["models/*.onnx", "models/*.pt"]
+
+[tool.ruff.lint]
+# Lenient default ruleset matching the codebase's existing style -- not a
+# strict rewrite. Pyflakes (F) + pycodestyle errors (E) catch real bugs
+# (unused imports, undefined names, syntax issues); import-sort (I) is
+# cheap and non-controversial. Deliberately NOT enabling stricter families
+# (docstrings, complexity, naming) that would require a large rewrite pass.
+select = ["E", "F", "I"]
+ignore = [
+    "E501",  # line-length handled by the line-length setting above, not as a hard error
+    "E402",  # every v2.0 module does `sys.path.insert(...)` then imports -- deliberate,
+             # consistent pattern (each submodule is independently runnable without an
+             # installed package / PYTHONPATH setup), not something to flag file-by-file.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401"]  # test files sometimes import fixtures for side effects
+
+[tool.mypy]
+python_version = "3.11"
+# Non-strict initial config: much of the codebase has partial typing.
+# Enabling --strict now would surface a large pre-existing backlog with no
+# incremental path to fix it. This catches genuine type errors in code
+# that DOES have annotations, without demanding annotations everywhere.
+disallow_untyped_defs = false
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
+exclude = ["models/", "dashboard/"]

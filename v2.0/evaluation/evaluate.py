@@ -16,6 +16,7 @@ Output: JSON report written to v2.0/evaluation/reports/<timestamp>.json
 """
 
 from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -30,13 +31,13 @@ logger = logging.getLogger("cognen.evaluate")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluation.behavior_metrics  import BehaviorEvaluator
-from evaluation.tracking_metrics  import TrackingEvaluator, TrackFrame
+from evaluation.behavior_metrics import BehaviorEvaluator
+
 # OccupancyEvaluator import removed -- unused until a real per-seat
 # ground-truth annotation format exists (see _eval_occupancy docstring).
-from evaluation.latency_benchmark import LatencyBenchmark, TARGETS_MS
-from training.datasets.base_dataset import WINDOW_SIZE, FEATURE_DIM
-
+from evaluation.latency_benchmark import TARGETS_MS, LatencyBenchmark
+from evaluation.tracking_metrics import TrackFrame, TrackingEvaluator
+from training.datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE
 
 # ── Behavior evaluation ───────────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ def _eval_behavior(args: argparse.Namespace) -> dict:
     ev = BehaviorEvaluator()
     from training.datasets.classroom_loader import ClassroomDataset
     ds = ClassroomDataset(args.classroom, split="test")
-    for window, label in ds:
+    for window, label, _group_id in ds:
         # window: (W, F) → (1, F, W)
         x = window.T[np.newaxis, :, :]  # (1, 13, 15)
         logits = sess.run(["logits"], {"input": x})[0]
@@ -110,9 +111,11 @@ def _eval_tracking(args: argparse.Namespace) -> dict:
         return _skip("no --classroom dataset path provided")
 
     import json as _json
+
     import cv2
-    from tracking.byte_tracker import ByteTrackWrapper
+
     from perception.person_detector import PersonDetector
+    from tracking.byte_tracker import ByteTrackWrapper
 
     classroom_root = Path(args.classroom)
     ann_dir = classroom_root / "annotations"
@@ -154,7 +157,7 @@ def _eval_tracking(args: argparse.Namespace) -> dict:
             if fi in frame_gt:
                 detections = detector.detect(frame)
                 tracks = tracker.update(detections, frame)
-                pred_tracks = [TrackFrame(t.track_id, tuple(t.bbox_xyxy)) for t in tracks]
+                pred_tracks = [TrackFrame(t.track_id, t.bbox_xyxy) for t in tracks]
                 ev.update(frame_gt[fi], pred_tracks)
             fi += 1
         cap.release()

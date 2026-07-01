@@ -14,21 +14,28 @@ The trained checkpoint is saved and then exported to ONNX via export_onnx.py.
 """
 
 from __future__ import annotations
+
 import argparse
 import logging
 import random
 import sys
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
+
+if TYPE_CHECKING:
+    # Only needed for type annotations below -- the real import stays
+    # lazy (inside train()/_get_penalty()/_compute_class_weights()) so
+    # this module stays importable/testable without torch installed.
+    import torch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("cognen.train")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from training.datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE, BEHAVIOR_CLASSES
+from training.datasets.base_dataset import BEHAVIOR_CLASSES, FEATURE_DIM, WINDOW_SIZE
 
 # NUM_CLASSES/BehaviorClassifierCNN come from training.model, which imports
 # torch at module level -- keep that import lazy (only inside train(), which
@@ -170,21 +177,21 @@ class ConfusionPenaltyLoss:
     defaulting to 1.0x (plain cross-entropy).
     """
 
-    PENALTY: "np.ndarray | None" = None
+    PENALTY: np.ndarray | None = None
 
     @classmethod
-    def _get_penalty(cls) -> "torch.Tensor":
+    def _get_penalty(cls) -> torch.Tensor:
         import torch
+
         from training.penalty_matrix import build_penalty_matrix
         if cls.PENALTY is None:
             cls.PENALTY = build_penalty_matrix()
         return torch.from_numpy(cls.PENALTY)
 
     @classmethod
-    def compute(cls, logits: "torch.Tensor", targets: "torch.Tensor",
-                class_weights: "torch.Tensor | None" = None,
-                label_smoothing: float = 0.05) -> "torch.Tensor":
-        import torch
+    def compute(cls, logits: torch.Tensor, targets: torch.Tensor,
+                class_weights: torch.Tensor | None = None,
+                label_smoothing: float = 0.05) -> torch.Tensor:
         import torch.nn.functional as F
 
         penalty = cls._get_penalty().to(logits.device)    # (C, C)
@@ -199,7 +206,7 @@ class ConfusionPenaltyLoss:
         return (ce * pen).mean()
 
 
-def _compute_class_weights(y: np.ndarray) -> "torch.Tensor":
+def _compute_class_weights(y: np.ndarray) -> torch.Tensor:
     """Inverse-frequency weighting for class imbalance."""
     import torch
     counts = np.bincount(y, minlength=NUM_CLASSES).astype(np.float32)
@@ -212,6 +219,7 @@ def _compute_class_weights(y: np.ndarray) -> "torch.Tensor":
 def train(args: argparse.Namespace) -> None:
     import torch
     import torch.nn as nn
+
     from training.model import BehaviorClassifierCNN
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

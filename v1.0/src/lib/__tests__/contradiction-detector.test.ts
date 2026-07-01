@@ -41,8 +41,9 @@ describe('ContradictionDetector', () => {
   });
 
   it('flags fatigue_masking when gaze looks fine but posture and eyes say tired', () => {
+    let result;
     for (let i = 0; i < 5; i++) {
-      var result = detector.compute(
+      result = detector.compute(
         baseMetrics({ gazeX: 0, gazeY: 0, headPoseStability: 10, perclos: 40 })
       );
     }
@@ -51,8 +52,9 @@ describe('ContradictionDetector', () => {
   });
 
   it('flags prop_without_engagement when a book is detected but hands are not on it', () => {
+    let result;
     for (let i = 0; i < 5; i++) {
-      var result = detector.compute(
+      result = detector.compute(
         baseMetrics({
           detectedObjects: [{ class: 'book', confidence: 0.9, bbox: { x: 0.5, y: 0.5, width: 0.1, height: 0.1 } }],
           handObjectProximity: 'hands_not_visible',
@@ -63,8 +65,9 @@ describe('ContradictionDetector', () => {
   });
 
   it('flags context_conflict when gaze looks attentive but a phone is detected', () => {
+    let result;
     for (let i = 0; i < 5; i++) {
-      var result = detector.compute(
+      result = detector.compute(
         baseMetrics({
           gazeX: 0,
           gazeY: 0,

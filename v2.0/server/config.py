@@ -4,13 +4,22 @@ Loads settings from environment / .env file.
 """
 
 from __future__ import annotations
+
 import json
-from pathlib import Path
-from pydantic import BaseModel
-from dotenv import load_dotenv
 import os
+import re
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 load_dotenv()
+
+# room_id flows directly into filesystem paths (load_seat_map below) and
+# is used as a dict key elsewhere -- restrict to a safe charset so a
+# room_id like "../../etc/passwd" can't escape SEAT_MAPS_DIR.
+ROOM_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+MAX_CONCURRENT_ROOMS = int(os.getenv("COGNEN_MAX_CONCURRENT_ROOMS", "20"))
 
 # ── Model paths ──────────────────────────────────────────────────────────────
 
@@ -20,6 +29,22 @@ PERSON_DETECTOR_MODEL  = MODELS_DIR / "yolov8m.pt"
 OBJECT_DETECTOR_MODEL  = MODELS_DIR / "yolov8s-objects.pt"
 POSE_ESTIMATOR_MODEL   = MODELS_DIR / "yolov8m-pose.pt"
 BEHAVIOR_CLASSIFIER_MODEL = MODELS_DIR / "behavior_classifier.onnx"
+
+
+def require_model_file(path: Path) -> Path:
+    """
+    Validate a model file exists before handing it to a heavy loader
+    (YOLO/onnxruntime). Without this, a missing .pt/.onnx file surfaces as
+    an opaque exception deep inside the third-party library's own loading
+    code -- this gives a clear, actionable error pointing at
+    download_models.py instead.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Model file not found: {path}\n"
+            f"Run `python3 v2.0/models/download_models.py` to fetch required model weights."
+        )
+    return path
 
 # ── Inference settings ───────────────────────────────────────────────────────
 
@@ -64,7 +89,14 @@ def load_seat_map(room_id: str) -> dict[str, list[tuple[float, float]]]:
     Load seat polygons for a room.
     Format: { "seat_1": [[x1,y1], [x2,y2], ...], ... }
     Coordinates are normalised [0, 1].
+
+    Defense-in-depth: rejects a room_id outside ROOM_ID_PATTERN even though
+    the FastAPI layer (server/main.py) should already have validated it --
+    this function builds a filesystem path directly from room_id, so it
+    must not trust an unvalidated caller.
     """
+    if not ROOM_ID_PATTERN.match(room_id):
+        raise ValueError(f"invalid room_id: {room_id!r}")
     path = SEAT_MAPS_DIR / f"{room_id}.json"
     if not path.exists():
         return {}

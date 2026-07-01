@@ -13,6 +13,7 @@ folded into attention_score.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 _ALPHA = 0.35  # faster than the temporal classifier's own smoothing

@@ -10,8 +10,8 @@
  * - Anomaly detection in metrics
  */
 
-import type { SessionDataPoint, SessionAnalytics, MLPrediction } from './types';
-import { calculateVariance, calculateStdDev } from './face-geometry';
+import type { SessionDataPoint, SessionAnalytics } from './types';
+import { calculateStdDev } from './face-geometry';
 
 // ==================== CONSTANTS ====================
 
@@ -39,14 +39,13 @@ function linearRegression(points: Array<{ x: number; y: number }>): RegressionRe
     }
 
     const n = points.length;
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
 
     for (const point of points) {
         sumX += point.x;
         sumY += point.y;
         sumXY += point.x * point.y;
         sumX2 += point.x * point.x;
-        sumY2 += point.y * point.y;
     }
 
     const denominator = (n * sumX2 - sumX * sumX);

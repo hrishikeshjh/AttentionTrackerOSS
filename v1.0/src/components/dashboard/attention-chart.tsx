@@ -4,7 +4,6 @@ import type { SessionDataPoint } from '@/lib/types';
 import {
   Line,
   LineChart,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,

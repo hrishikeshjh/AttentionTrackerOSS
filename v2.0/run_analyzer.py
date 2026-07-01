@@ -40,7 +40,6 @@ import asyncio
 import json
 import logging
 import sys
-import time
 from pathlib import Path
 
 import cv2
@@ -49,10 +48,12 @@ import numpy as np
 # Ensure v2.0/ is on the import path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from input.frame_source import make_source, FrameSource
+from input.frame_source import make_source
 from server.config import (
-    INPUT_WIDTH, INPUT_HEIGHT,
-    PROCESS_EVERY_N_FRAMES, RTSP_TRANSPORT,
+    INPUT_HEIGHT,
+    INPUT_WIDTH,
+    PROCESS_EVERY_N_FRAMES,
+    RTSP_TRANSPORT,
     load_seat_map,
 )
 

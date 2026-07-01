@@ -8,11 +8,11 @@ Every dataset loader must:
 """
 
 from __future__ import annotations
+
 import abc
 from typing import Generator, Iterator
 
 import numpy as np
-
 
 # Canonical 6-class taxonomy (index order is fixed — used by the model)
 BEHAVIOR_CLASSES: list[str] = [

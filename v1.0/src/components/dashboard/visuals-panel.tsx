@@ -78,11 +78,11 @@ export default function VisualsPanel({
       } else {
         throw new Error(result.error || 'Unknown error');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to generate report:', error);
       toast({
         title: 'Report Generation Failed',
-        description: error.message,
+        description: error instanceof Error ? error.message : 'An unexpected error occurred.',
         variant: 'destructive',
       });
     } finally {

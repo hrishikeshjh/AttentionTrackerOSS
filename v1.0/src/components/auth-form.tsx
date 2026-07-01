@@ -65,11 +65,11 @@ export default function AuthForm() {
         await signInWithEmailAndPassword(auth, values.email, values.password);
       }
       // Redirect is handled by the page component
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast({
         variant: 'destructive',
         title: 'Authentication Failed',
-        description: error.message,
+        description: error instanceof Error ? error.message : 'An unexpected error occurred.',
       });
     } finally {
       setIsLoading(false);
@@ -81,11 +81,11 @@ export default function AuthForm() {
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast({
         variant: 'destructive',
         title: 'Google Sign-In Failed',
-        description: error.message,
+        description: error instanceof Error ? error.message : 'An unexpected error occurred.',
       });
     } finally {
       setIsLoading(false);

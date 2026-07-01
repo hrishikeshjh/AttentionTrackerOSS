@@ -36,6 +36,7 @@ metadata.csv format: clip_id, split (train|val|test), duration_sec, num_persons
 """
 
 from __future__ import annotations
+
 import csv
 import json
 import logging
@@ -45,9 +46,7 @@ from typing import Generator
 
 import numpy as np
 
-from .base_dataset import (
-    BaseBehaviorDataset, CLASS_TO_IDX, BEHAVIOR_CLASSES, FEATURE_DIM, WINDOW_SIZE
-)
+from .base_dataset import CLASS_TO_IDX, WINDOW_SIZE, BaseBehaviorDataset
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from features.feature_vector import extract_feature_vector_from_landmarks

@@ -18,6 +18,7 @@ Body (JSON):
 """
 
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -26,19 +27,32 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from server.config import (
-    API_HOST, API_PORT, WS_PATH,
-    PROCESS_EVERY_N_FRAMES, RTSP_TRANSPORT,
-    load_seat_map,
-)
 from inference.room_analyzer import RoomAnalyzer
 from input.frame_source import make_source
+from server.config import (
+    API_HOST,
+    API_PORT,
+    MAX_CONCURRENT_ROOMS,
+    PROCESS_EVERY_N_FRAMES,
+    ROOM_ID_PATTERN,
+    RTSP_TRANSPORT,
+    WS_PATH,
+    load_seat_map,
+)
 
 logger = logging.getLogger("cognen.v2")
+
+
+def _validate_room_id(room_id: str) -> None:
+    """room_id flows into filesystem paths (load_seat_map) -- reject
+    anything outside a safe charset before it's used anywhere, closing the
+    path-traversal hole (e.g. room_id="../../etc/passwd")."""
+    if not ROOM_ID_PATTERN.match(room_id):
+        raise HTTPException(status_code=422, detail=f"invalid room_id: {room_id!r}")
 
 
 # ── Source configuration model ────────────────────────────────────────────────
@@ -109,20 +123,41 @@ async def start_room(room_id: str, config: SourceConfig):
              -H "Content-Type: application/json" \\
              -d '{"source_type":"camera","device":0}'
     """
+    _validate_room_id(room_id)
+
     if room_id in _analyzers and _analyzers[room_id]._running:
         return {"status": "already_running", "room_id": room_id}
 
-    seat_map = load_seat_map(room_id)
-    analyzer = RoomAnalyzer(room_id=room_id, seat_map=seat_map)
+    n_running = sum(1 for a in _analyzers.values() if a._running)
+    if n_running >= MAX_CONCURRENT_ROOMS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"max concurrent rooms ({MAX_CONCURRENT_ROOMS}) reached; stop an existing room first",
+        )
+
+    try:
+        seat_map = load_seat_map(room_id)
+        analyzer = RoomAnalyzer(room_id=room_id, seat_map=seat_map)
+    except FileNotFoundError as exc:
+        # Model weights missing -- clear 500 with actionable message instead
+        # of an opaque stack trace from deep inside ultralytics/onnxruntime.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     _analyzers[room_id] = analyzer
 
-    source = make_source(
-        source_type=config.source_type,
-        url=config.url,
-        device=config.device,
-        loop_file=config.loop_file,
-        rtsp_transport=config.rtsp_transport,
-    )
+    try:
+        source = make_source(
+            source_type=config.source_type,
+            url=config.url,
+            device=config.device,
+            loop_file=config.loop_file,
+            rtsp_transport=config.rtsp_transport,
+        )
+    except ValueError as exc:
+        del _analyzers[room_id]
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     asyncio.create_task(
         analyzer.run_source(source, process_every_n=config.process_every_n)
@@ -142,9 +177,10 @@ async def start_room(room_id: str, config: SourceConfig):
 @app.post("/rooms/{room_id}/stop")
 async def stop_room(room_id: str):
     """Stop the analysis pipeline for a room."""
+    _validate_room_id(room_id)
     analyzer = _analyzers.get(room_id)
     if analyzer is None:
-        return {"error": "Room not found"}
+        raise HTTPException(status_code=404, detail="Room not found")
     analyzer.shutdown()
     return {"status": "stopped", "room_id": room_id}
 
@@ -152,8 +188,9 @@ async def stop_room(room_id: str):
 @app.get("/rooms/{room_id}/snapshot")
 async def snapshot(room_id: str):
     """Return the latest analytics snapshot for a room."""
+    _validate_room_id(room_id)
     if room_id not in _analyzers:
-        return {"error": "Room not found"}
+        raise HTTPException(status_code=404, detail="Room not found")
     return _analyzers[room_id].get_snapshot()
 
 
@@ -175,21 +212,36 @@ async def room_websocket(websocket: WebSocket, room_id: str):
     Message format:
       { "ts": float, "persons": [...], "occupancy": {...}, "room_attention": float }
     """
+    if not ROOM_ID_PATTERN.match(room_id):
+        # Reject before accept -- same path-traversal-adjacent validation
+        # as the REST endpoints (room_id isn't used in a path here, but
+        # rejecting a malformed ID early is consistent and cheap).
+        await websocket.close(code=1008)  # policy violation
+        return
+
     await websocket.accept()
 
     if room_id not in _analyzers:
         await websocket.send_json({"error": "Room not found"})
-        await websocket.close()
+        await websocket.close(code=1008)
         return
 
     analyzer = _analyzers[room_id]
     try:
         while True:
-            payload = analyzer.get_snapshot()
-            await websocket.send_text(json.dumps(payload))
+            try:
+                payload = analyzer.get_snapshot()
+                await websocket.send_text(json.dumps(payload))
+            except (TypeError, ValueError) as exc:
+                # Snapshot serialization failure -- log and skip this tick
+                # rather than crashing the whole streaming task silently.
+                logger.error("Snapshot serialization failed: room=%s err=%s", room_id, exc)
             await asyncio.sleep(0.2)   # 5 Hz push
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: room=%s", room_id)
+    except Exception:
+        logger.exception("Unexpected error in room_websocket: room=%s", room_id)
+        await websocket.close(code=1011)  # internal error
 
 
 if __name__ == "__main__":

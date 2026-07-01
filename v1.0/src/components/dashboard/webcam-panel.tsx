@@ -338,7 +338,13 @@ export default function WebcamPanel({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Webcam Feed</CardTitle>
         <div className="flex items-center gap-2">
-          <Button onClick={handleWebcamToggle} size="icon" variant="outline" disabled={isLoading}>
+          <Button
+            onClick={handleWebcamToggle}
+            size="icon"
+            variant="outline"
+            disabled={isLoading}
+            aria-label={isWebcamOn ? 'Turn off webcam' : 'Turn on webcam'}
+          >
             {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : isWebcamOn ? <VideoOff className="h-4 w-4" /> : <Video className="h-4 w-4" />}
           </Button>
           <Button onClick={handleSessionToggle} disabled={!isWebcamOn || isLoading} className="w-32">

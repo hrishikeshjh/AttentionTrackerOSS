@@ -13,11 +13,11 @@ Run: pytest v2.0/tests/test_integration.py
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 import pytest
-
 
 # ── Feature extractor ↔ BehaviorClassifier ───────────────────────────────────
 
@@ -36,7 +36,7 @@ class TestFeatureExtractorIntegration:
         return FaceMetricsResult(**defaults)
 
     def test_feature_vector_shape(self):
-        from training.feature_extractor import extract_feature_vector, FEATURE_DIM
+        from training.feature_extractor import FEATURE_DIM, extract_feature_vector
         m = self._metrics()
         v = extract_feature_vector(m)
         assert v.shape == (FEATURE_DIM,)
@@ -83,8 +83,8 @@ class TestFeatureExtractorIntegration:
         assert v_bk[12] == 0.75
 
     def test_build_input_tensor_shape(self):
-        from training.feature_extractor import build_input_tensor, FEATURE_DIM
         from training.datasets.base_dataset import WINDOW_SIZE
+        from training.feature_extractor import FEATURE_DIM, build_input_tensor
         pytest.importorskip("torch")
         import torch
         window = np.zeros((WINDOW_SIZE, FEATURE_DIM), dtype=np.float32)
@@ -96,7 +96,7 @@ class TestFeatureExtractorIntegration:
 
 class TestDatasetBase:
     def test_build_windows_shape(self):
-        from training.datasets.base_dataset import BaseBehaviorDataset, FEATURE_DIM, WINDOW_SIZE
+        from training.datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE, BaseBehaviorDataset
         n_frames = 50
         frames = [np.zeros(FEATURE_DIM, dtype=np.float32) for _ in range(n_frames)]
         labels = list(range(n_frames))
@@ -108,7 +108,7 @@ class TestDatasetBase:
         assert np.all(groups == "clip_a")
 
     def test_build_windows_label_is_last_frame(self):
-        from training.datasets.base_dataset import BaseBehaviorDataset, FEATURE_DIM, WINDOW_SIZE
+        from training.datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE, BaseBehaviorDataset
         frames = [np.zeros(FEATURE_DIM, dtype=np.float32)] * 20
         labels = list(range(20))
         _, y, _ = BaseBehaviorDataset.build_windows(frames, labels, window_size=WINDOW_SIZE, stride=1)
@@ -116,7 +116,7 @@ class TestDatasetBase:
         assert y[0] == WINDOW_SIZE - 1
 
     def test_build_windows_too_short(self):
-        from training.datasets.base_dataset import BaseBehaviorDataset, FEATURE_DIM, WINDOW_SIZE
+        from training.datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE, BaseBehaviorDataset
         frames = [np.zeros(FEATURE_DIM, dtype=np.float32)] * (WINDOW_SIZE - 1)
         labels = list(range(WINDOW_SIZE - 1))
         windows, y, groups = BaseBehaviorDataset.build_windows(frames, labels)
@@ -124,7 +124,7 @@ class TestDatasetBase:
         assert len(groups) == 0
 
     def test_encode_feature_shape(self):
-        from training.datasets.base_dataset import BaseBehaviorDataset, FEATURE_DIM
+        from training.datasets.base_dataset import FEATURE_DIM, BaseBehaviorDataset
         v = BaseBehaviorDataset.encode_feature()
         assert v.shape == (FEATURE_DIM,)
 
@@ -143,9 +143,9 @@ class TestStreamingEvaluation:
     """
 
     def test_evaluator_tracks_live_classifier(self):
-        from inference.behavior_classifier import BehaviorClassifier
         from evaluation.behavior_metrics import BehaviorEvaluator
         from features.face_metrics import FaceMetricsResult
+        from inference.behavior_classifier import BehaviorClassifier
         from training.datasets.base_dataset import CLASS_TO_IDX
 
         clf = BehaviorClassifier()
@@ -183,8 +183,8 @@ class TestPerSeatStateIsolation:
     """
 
     def test_independent_classifiers(self):
-        from inference.behavior_classifier import BehaviorClassifier
         from features.face_metrics import FaceMetricsResult
+        from inference.behavior_classifier import BehaviorClassifier
 
         def _frame(pitch):
             m = FaceMetricsResult(
@@ -203,7 +203,7 @@ class TestPerSeatStateIsolation:
 
         for _ in range(20):
             r_s = clf_screen.update(_frame(-3.0))     # attentive screen
-            r_d = clf_drowsy.update(_frame(0.0))
+            clf_drowsy.update(_frame(0.0))
 
         # Each classifier should converge to different labels
         # (screen stays attentive, drowsy test just checks no cross-contamination)
@@ -220,7 +220,7 @@ class TestONNXSmoke:
 
     def test_model_forward(self):
         torch = pytest.importorskip("torch")
-        from training.model import BehaviorClassifierCNN, FEATURE_DIM, WINDOW_SIZE, NUM_CLASSES
+        from training.model import FEATURE_DIM, NUM_CLASSES, WINDOW_SIZE, BehaviorClassifierCNN
         model = BehaviorClassifierCNN()
         model.eval()
         x = torch.zeros(2, FEATURE_DIM, WINDOW_SIZE)
@@ -230,7 +230,7 @@ class TestONNXSmoke:
 
     def test_model_predict_proba_sums_to_1(self):
         torch = pytest.importorskip("torch")
-        from training.model import BehaviorClassifierCNN, FEATURE_DIM, WINDOW_SIZE
+        from training.model import FEATURE_DIM, WINDOW_SIZE, BehaviorClassifierCNN
         model = BehaviorClassifierCNN()
         model.eval()
         x = torch.randn(3, FEATURE_DIM, WINDOW_SIZE)
@@ -241,8 +241,9 @@ class TestONNXSmoke:
     def test_onnx_export_and_ort(self, tmp_path):
         torch   = pytest.importorskip("torch")
         ort     = pytest.importorskip("onnxruntime")
-        from training.model import BehaviorClassifierCNN, FEATURE_DIM, WINDOW_SIZE, NUM_CLASSES
         import tempfile
+
+        from training.model import FEATURE_DIM, NUM_CLASSES, WINDOW_SIZE, BehaviorClassifierCNN
 
         model = BehaviorClassifierCNN()
         model.eval()

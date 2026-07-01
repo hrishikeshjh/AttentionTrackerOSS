@@ -4,6 +4,7 @@ Run: pytest v2.0/tests/test_behavior.py
 """
 
 import sys
+
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 
 from features.face_metrics import FaceMetricsResult

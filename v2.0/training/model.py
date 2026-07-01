@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from .datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE, BEHAVIOR_CLASSES
+from .datasets.base_dataset import BEHAVIOR_CLASSES, FEATURE_DIM, WINDOW_SIZE
 
 NUM_CLASSES = len(BEHAVIOR_CLASSES)
 

@@ -22,12 +22,12 @@ Usage:
 """
 
 from __future__ import annotations
+
 import contextlib
 import time
 from typing import Callable, Generator
 
 import numpy as np
-
 
 TARGETS_MS = {
     "v1.0": 200.0,

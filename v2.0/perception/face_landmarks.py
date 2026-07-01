@@ -30,6 +30,7 @@ the file there manually.
 """
 
 from __future__ import annotations
+
 import logging
 import urllib.request
 from dataclasses import dataclass
@@ -121,9 +122,8 @@ class FaceLandmarksDetector:
 
     def _init(self) -> None:
         try:
-            import mediapipe as mp  # type: ignore
-            from mediapipe.tasks import python as mp_python  # type: ignore
-            from mediapipe.tasks.python import vision as mp_vision  # type: ignore
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision as mp_vision
 
             model_path = _ensure_model()
             if model_path is None:
@@ -171,8 +171,8 @@ class FaceLandmarksDetector:
         if not self._available or self._landmarker is None:
             return []
 
-        import cv2  # type: ignore
-        import mediapipe as mp  # type: ignore
+        import cv2
+        import mediapipe as mp
 
         h, w = bgr_frame.shape[:2]
         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)

@@ -17,15 +17,15 @@ Run: pytest v2.0/tests/test_v2_pipeline.py
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 
-from tracking.byte_tracker import Track
-from tracking.seat_mapper  import SeatMapper
-from inference.behavior_classifier import BehaviorClassifier
 from features.face_metrics import FaceMetricsResult
-
+from inference.behavior_classifier import BehaviorClassifier
+from tracking.byte_tracker import Track
+from tracking.seat_mapper import SeatMapper
 
 # ── shared fixtures ───────────────────────────────────────────────────────────
 
@@ -250,7 +250,7 @@ class TestEvaluationMetrics:
         assert 0.0 <= m["f1_macro"] <= 1.0
 
     def test_tracking_evaluator(self):
-        from evaluation.tracking_metrics import TrackingEvaluator, TrackFrame
+        from evaluation.tracking_metrics import TrackFrame, TrackingEvaluator
         ev = TrackingEvaluator()
         gt   = [TrackFrame(1, (10, 10, 200, 400))]
         pred = [TrackFrame(1, (12, 12, 202, 402))]
@@ -269,8 +269,9 @@ class TestEvaluationMetrics:
         assert 0.0 <= m["occupancy_accuracy"] <= 1.0
 
     def test_latency_benchmark(self):
-        from evaluation.latency_benchmark import LatencyBenchmark
         import time
+
+        from evaluation.latency_benchmark import LatencyBenchmark
         bench = LatencyBenchmark("test")
         for _ in range(10):
             with bench.measure():

@@ -5,10 +5,13 @@ Used for posture analysis (ARCHITECTURE.md §5.4).
 """
 
 from __future__ import annotations
-import numpy as np
+
 from dataclasses import dataclass, field
+
+import numpy as np
 from ultralytics import YOLO
-from server.config import POSE_ESTIMATOR_MODEL, POSE_CONF_THRESHOLD
+
+from server.config import POSE_CONF_THRESHOLD, POSE_ESTIMATOR_MODEL, require_model_file
 
 # COCO keypoint indices
 KP = dict(
@@ -43,7 +46,7 @@ class PostureResult:
 
 class PoseEstimator:
     def __init__(self):
-        self.model = YOLO(str(POSE_ESTIMATOR_MODEL))
+        self.model = YOLO(str(require_model_file(POSE_ESTIMATOR_MODEL)))
         self.model.overrides["verbose"] = False
 
     def detect(self, frame: np.ndarray) -> list[PoseDetection]:

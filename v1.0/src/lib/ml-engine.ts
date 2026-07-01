@@ -133,8 +133,7 @@ export { ExponentialMovingAverage };
  */
 function scoreFeature(
   name: string,
-  value: number | null,
-  metrics: ExtendedFaceMetrics
+  value: number | null
 ): { score: number; contribution: number; quality: number } {
   if (value === null) return { score: 50, contribution: 0, quality: 0 };
 
@@ -314,7 +313,7 @@ export class MLEngine {
       const weight = weights[name] ?? 0;
       if (weight === 0 || value === null) continue;
 
-      const result = scoreFeature(name, value, metrics);
+      const result = scoreFeature(name, value);
       featureScores[name] = result;
 
       weightedSum += result.score * weight * result.quality;

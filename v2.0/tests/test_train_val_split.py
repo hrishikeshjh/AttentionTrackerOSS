@@ -11,6 +11,7 @@ No torch/cv2/mediapipe needed -- pure numpy + scikit-learn.
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
@@ -39,7 +40,7 @@ def test_no_group_leaks_across_split():
 
     # Recover which group each returned sample belongs to by re-deriving
     # membership via a lookup table (groups are known ahead of time here).
-    group_of = {}
+    group_of: dict[str, list[int]] = {}
     for i, g in enumerate(groups):
         group_of.setdefault(g, []).append(i)
 
