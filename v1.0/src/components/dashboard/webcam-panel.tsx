@@ -8,6 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import type { SessionDataPoint, ExtendedFaceMetrics, MLPrediction } from '@/lib/types';
 import * as faceapi from 'face-api.js';
 import { FaceMetricsAggregator, HandObjectProximityDetector } from '@/lib/face-geometry';
+import { PrimaryFaceSelector } from '@/lib/scoring/face-selection';
 import { getMLEngine, resetMLEngine, debugPrediction } from '@/lib/ml-engine';
 import type { ObjectDetector } from '@/lib/object-detector';
 import type { HandTracker } from '@/lib/hand-tracker';
@@ -47,6 +48,7 @@ export default function WebcamPanel({
   const objectDetectorRef = useRef<ObjectDetector | null>(null);
   const handTrackerRef = useRef<HandTracker | null>(null);
   const proximityDetectorRef = useRef<HandObjectProximityDetector>(new HandObjectProximityDetector());
+  const primaryFaceSelectorRef = useRef<PrimaryFaceSelector>(new PrimaryFaceSelector());
   const temporalClassifierRef = useRef<TemporalBehaviorClassifier | null>(null);
 
   // Load face-api.js models
@@ -196,9 +198,20 @@ export default function WebcamPanel({
       if (!ctx) return;
       ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-      if (resizedDetections && resizedDetections.length > 0 && resizedDetections[0]) {
-        const landmarks = resizedDetections[0].landmarks.positions;
-        faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
+      // Lock onto a single primary face (largest + most centered, with
+      // identity-continuity hysteresis) instead of trusting detector order —
+      // detectAllFaces' array order is not a stable selection policy and can
+      // flip between candidates frame-to-frame when a second person or a
+      // photo/poster face enters frame.
+      const primary = primaryFaceSelectorRef.current.select(
+        resizedDetections.map((d) => ({ box: d.detection.box, detection: d })),
+        displaySize.width,
+        displaySize.height
+      );
+
+      if (primary) {
+        const landmarks = primary.detection.landmarks.positions;
+        faceapi.draw.drawFaceLandmarks(canvasRef.current, [primary.detection]);
 
         const timestamp = Date.now();
 

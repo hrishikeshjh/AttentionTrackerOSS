@@ -29,9 +29,10 @@ from tracking.byte_tracker       import ByteTrackWrapper, Track
 from tracking.seat_mapper        import SeatMapper
 from features.face_metrics       import (
     BlinkDetector, HeadPoseTracker, FatigueCalculator,
-    calculate_ear, calculate_mar, calculate_head_pose,
+    calculate_ear, calculate_mar, calculate_head_pose, calculate_gaze,
     FaceMetricsResult,
 )
+from inference.contradiction_detector import ContradictionDetector
 from inference.behavior_classifier import BehaviorClassifier, BehaviorResult
 from input.frame_source import FrameSource, RTSPSource
 from server.config import (
@@ -52,6 +53,7 @@ class PersonState:
     fatigue_calc:   FatigueCalculator   = field(default_factory=FatigueCalculator)
     behavior_clf:   BehaviorClassifier  = field(default_factory=lambda:
                         BehaviorClassifier(BEHAVIOR_CLASSIFIER_MODEL))
+    contradiction_detector: ContradictionDetector = field(default_factory=ContradictionDetector)
     last_result: BehaviorResult | None  = None
 
 
@@ -237,8 +239,9 @@ class RoomAnalyzer:
             ear   = calculate_ear(landmarks)
             mar   = calculate_mar(landmarks)
             yaw, pitch, roll = calculate_head_pose(landmarks)
+            gaze_x, gaze_y = calculate_gaze(landmarks)
         else:
-            ear = mar = yaw = pitch = roll = None
+            ear = mar = yaw = pitch = roll = gaze_x = gaze_y = None
 
         blink_det, blink_rate, perclos = state.blink_detector.update(ear, ts_ms)
         state.pose_tracker.add(yaw, pitch, roll, ts_ms)
@@ -248,7 +251,7 @@ class RoomAnalyzer:
         metrics = FaceMetricsResult(
             ear=ear, mar=mar,
             pitch=pitch, yaw=yaw, roll=roll,
-            gaze_x=None, gaze_y=None,
+            gaze_x=gaze_x, gaze_y=gaze_y,
             blink_detected=blink_det,
             blink_rate=blink_rate, perclos=perclos,
             fatigue_index=fatigue,
@@ -271,13 +274,19 @@ class RoomAnalyzer:
         person_pose = self._nearest_pose(track.bbox_xyxy, pose_dets)
         posture = PoseEstimator.analyze_posture(person_pose) if person_pose else None
 
+        hand_proximity = "hands_not_visible"  # extend with HandTracker if needed
         behavior = state.behavior_clf.update({
             "metrics": metrics,
             "detected_objects": person_objs,
-            "hand_proximity": "hands_not_visible",  # extend with HandTracker if needed
+            "hand_proximity": hand_proximity,
             "posture": posture,
         })
         state.last_result = behavior
+
+        # Cross-Modal Contradiction Vector -- computed alongside the
+        # behavior classifier but never folded into attention_score (see
+        # inference/contradiction_detector.py).
+        contradiction = state.contradiction_detector.compute(metrics, person_objs, hand_proximity)
 
         return {
             "track_id":      track.track_id,
@@ -285,6 +294,8 @@ class RoomAnalyzer:
             "behavior":      behavior.label,
             "attention_score": behavior.attention_score,
             "confidence":    round(behavior.confidence, 2),
+            "contradiction_index":    round(contradiction.contradiction_index, 3),
+            "contradiction_category": contradiction.category,
         }
 
     # ── Helpers ───────────────────────────────────────────────────────────────

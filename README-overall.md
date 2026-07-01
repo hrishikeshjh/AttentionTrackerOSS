@@ -154,13 +154,22 @@ A 3-layer Convolutional Neural Network (1D) evaluating a 15-frame sliding window
 
 ---
 
-### 4.4 Dataset Specification & Preprocessing
+### 4.4 Dataset Specification & Preprocessing (Target Composition)
 
-The empirical validation utilized a hybrid dataset comprising **55,100 annotated temporal sequences** (15 frames per window; 3-second behavioral segments sampled at 5 Hz).
+> ⚠ This section describes the **target** dataset composition, not one that
+> has been assembled and trained on. See
+> [`v2.0/training/datasets/`](v2.0/training/datasets/) for the current,
+> real state: synthetic AR(1) generation is implemented and working; the
+> DAiSEE and EngageNet loaders exist but have never been run against
+> downloaded real corpora (no such corpora exist in this repo); the
+> classroom loader exists but nothing currently produces its expected
+> input format. Current training runs are synthetic-data-only.
 
-*   **Source & Characteristics:** Curated in a two-phase process. Phase I generated 42,600 class-conditional synthetic sequences using AR(1) autoregressive dynamics (ρ = 0.60–0.90 per feature) to simulate realistic sustained behavioral continuity based on biometric literature. Phase II incorporated 12,500 real-world annotated clips from the DAiSEE and EngageNet public corpora to introduce variance in lighting, partial occlusion, and detection jitter.
-*   **Data Split:** The dataset strictly prevents leakage. 42,600 sequences were heavily augmented for training, 1,800 unaugmented sequences formed a deterministic validation holdout (15%), and an independent, differently-seeded set of 3,000 unaugmented windows served as the test set.
-*   **Preprocessing:** Raw frames are converted into a 13-dimensional spatial feature vector. Gaze and yaw/pitch angles are normalized to `[-1, 1]`. Biometrics (EAR, PERCLOS) are clamped to `[0, 1]`. Object semantics are mapped to one-hot vectors, and hand-object interactions are encoded as continuous proximity coefficients.
+The target hybrid dataset comprises **55,100 annotated temporal sequences** (15 frames per window; 3-second behavioral segments sampled at 5 Hz).
+
+*   **Source & Characteristics:** A two-phase composition. Phase I: 42,600 class-conditional synthetic sequences using AR(1) autoregressive dynamics (ρ = 0.60–0.90 per feature) to simulate realistic sustained behavioral continuity based on biometric literature — this phase is implemented (`v2.0/training/datasets/realistic_synthetic_loader.py`). Phase II: 12,500 real-world annotated clips from the DAiSEE and EngageNet public corpora, intended to introduce variance in lighting, partial occlusion, and detection jitter — loaders exist but have not yet been run against real data, and neither corpus natively provides `using_phone`/`attentive_reading`/`absent` labels (no object-interaction annotations in either dataset), so a proxy-labeling or supplementary classroom-data strategy is required to cover those classes.
+*   **Data Split (target):** Split by subject/clip (never by window, to prevent leakage from overlapping sliding windows of the same clip) — target ratio 70% train / 15% val / 15% test on real data, with synthetic data usable only for training.
+*   **Preprocessing:** Raw frames convert into a 13-dimensional spatial feature vector. Gaze and yaw/pitch angles normalize to `[-1, 1]`. Biometrics (EAR, PERCLOS) clamp to `[0, 1]`. Object semantics map to one-hot vectors, and hand-object interactions encode as continuous proximity coefficients.
 *   **Augmentation:** Stochastic augmentations during training include temporal time-warping (±20%), localized feature dropout (8%), Gaussian gaze jitter (σ = 0.05), and targeted object-context injection.
 
 ---
@@ -252,45 +261,45 @@ CognEn-VCSir/
 
 ## 7. Performance Metrics
 
-### 7.1 Quantitative Evaluation
-Empirical evaluations were conducted across both single-subject (proximal webcam, v1.0) and multi-subject (classroom CCTV, v2.0) environments. Both deployments share the identical underlying 1D-CNN temporal classification core. Evaluated on the independent real-world hybrid test set (55,100 annotated temporal windows), the architecture yielded the following metrics:
+> ⚠ **TARGET METRICS — not yet measured on real, held-out data.** The table
+> below states design targets, not empirical results. No training run
+> against a real, subject-disjoint test set has produced these numbers yet:
+> there is no 55,100-sequence dataset, no DAiSEE/EngageNet integration run,
+> and no committed evaluation log backing them. The only real artifacts
+> produced so far are the synthetic-only smoke tests in
+> [`v2.0/evaluation/reports/experiment_report.md`](v2.0/evaluation/reports/experiment_report.md)
+> and [`experiment_report_v2.md`](v2.0/evaluation/reports/experiment_report_v2.md),
+> which are trained and tested on the same synthetic AR(1) generator
+> (train seed=42, test seed=43) — a circular evaluation, not a
+> generalization test — and say so explicitly. `v2.0/evaluation/evaluate.py`
+> previously fabricated numeric scores (`pred = label if rng.random() > 0.2
+> else random_class`) when no real dataset was supplied; this has been
+> fixed to report `"status": "SKIPPED"` instead of a synthesized score. See
+> the training/evaluation pipeline plan for the work required to produce
+> real numbers here.
 
-| Metric | Score | Target | Status |
-|---|---|---|---|
-| Behavior Accuracy | **0.865** | ≥ 0.85 | ✓ |
-| F1-macro | **0.852** | ≥ 0.80 | ✓ |
-| Precision (`using_phone`) | **0.914** | ≥ 0.90 | ✓ |
-| Recall (`attentive_reading`) | **0.873** | ≥ 0.85 | ✓ |
-| Temporal Consistency Coefficient | **0.931** | ≥ 0.90 | ✓ |
-| Tracking MOTA (v2.0) | **1.000** | ≥ 0.75 | ✓ |
-| Tracking IDF1 (v2.0) | **1.000** | ≥ 0.80 | ✓ |
-| Seat Occupancy Accuracy (v2.0) | **0.963** | ≥ 0.95 | ✓ |
-| v2.0 inference latency P95 | **< 0.1 ms** | < 100 ms | ✓ |
+### 7.1 Quantitative Evaluation (Targets)
+The target dataset composition is 55,100 annotated temporal windows spanning both single-subject (proximal webcam, v1.0) and multi-subject (classroom CCTV, v2.0) environments, sharing the identical underlying 1D-CNN temporal classification core. These are the targets the architecture is designed to meet, not measured results:
 
-### 7.2 Baseline Comparisons
-The framework was benchmarked against two established baseline paradigms:
-1. **Naive Temporal Baseline:** A 1D-CNN trained exclusively on uniform temporal sequences devoid of class-discriminating autoregressive signals. Yielded a peak validation accuracy of **21.3%** (barely above 16.7% random chance), demonstrating that network topology alone is insufficient without structured temporal data.
-2. **Deterministic Spatial Heuristic:** A non-parametric, rule-based inference engine executing frame-wise spatial feature evaluation. Achieved an accuracy of **80.8%** but suffered from severe classification degradation in complex spatial scenarios (e.g., partial occlusions, object-detector failures).
+| Metric | Target | Measured (synthetic smoke-test) |
+|---|---|---|
+| Behavior Accuracy | ≥ 0.85 | see experiment reports — circular eval, not comparable |
+| F1-macro | ≥ 0.80 | see experiment reports — circular eval, not comparable |
+| Precision (`using_phone`) | ≥ 0.90 | not yet measured |
+| Recall (`attentive_reading`) | ≥ 0.85 | not yet measured |
+| Temporal Consistency Coefficient | ≥ 0.90 | not yet measured |
+| Tracking MOTA (v2.0) | ≥ 0.75 | not yet measured on real video |
+| Tracking IDF1 (v2.0) | ≥ 0.80 | not yet measured on real video |
+| Seat Occupancy Accuracy (v2.0) | ≥ 0.95 | no real-data evaluation path implemented yet |
+| v2.0 inference latency P95 | < 100 ms | measured on synthetic input, see latency_benchmark.py |
 
-### 7.3 Ablation Study
-A comprehensive ablation study isolated the quantitative contribution of key algorithmic modules:
-*   **Context-Gate Override:** Removing this module caused persistent edge-case spatial ambiguities, equating to a **12.4% penalty in `using_phone` precision** and a **9.1% penalty in `attentive_reading` recall**.
-*   **Asymmetric ConfusionPenaltyLoss:** Removing the asymmetric penalty and reverting to standard cross-entropy reduced the optimization of pedagogical edge-cases, leading to an **18.5% drop in macro-F1**.
-*   **AR(1) Temporal Autocorrelation:** Removing realistic temporal variance forced the model to flicker between transient states, dropping temporal consistency from **0.931 to 0.742**.
+### 7.2 Baseline Comparisons (Targets)
+Two baseline paradigms the architecture is intended to beat, pending real evaluation:
+1. **Naive Temporal Baseline:** a 1D-CNN trained without class-discriminating autoregressive signals, expected to perform near chance (~16.7% for 6 classes) — demonstrating that network topology alone is insufficient without structured temporal data.
+2. **Deterministic Spatial Heuristic:** a non-parametric, rule-based frame-wise evaluator, expected to plateau well below the learned model, especially under occlusion/object-detector failures.
 
----
------------------------ | ------------ | -------- | ------ |
-| Behavior accuracy          | **1.000**    | ≥ 0.85   | ✓      |
-| F1-macro                   | **1.000**    | ≥ 0.80   | ✓      |
-| Precision (using_phone)    | **1.000**    | ≥ 0.90   | ✓      |
-| Recall (attentive_reading) | **1.000**    | ≥ 0.85   | ✓      |
-| Temporal consistency       | **1.000**    | ≥ 0.90   | ✓      |
-| Tracking MOTA              | **1.000**    | ≥ 0.75   | ✓      |
-| Tracking IDF1              | **1.000**    | ≥ 0.80   | ✓      |
-| Seat occupancy accuracy    | **0.963**    | ≥ 0.95   | ✓      |
-| v2.0 inference latency P95 | **< 0.1 ms** | < 100 ms | ✓      |
-
-> **Note**: Behavior scores are on the realistic synthetic test set (seed=43). Real-classroom accuracy is estimated at 0.82–0.88 pending DAiSEE/EngageNet fine-tuning.
+### 7.3 Ablation Study (Targets, not yet run)
+Three ablations are planned to isolate each algorithmic module's real contribution once a real, subject-disjoint test set exists — removing Context-Gate Override, removing the Asymmetric ConfusionPenaltyLoss, and removing AR(1) temporal autocorrelation. None of these have been run against real data; any percentage deltas quoted for them prior to that point are design targets, not results.
 
 ---
 

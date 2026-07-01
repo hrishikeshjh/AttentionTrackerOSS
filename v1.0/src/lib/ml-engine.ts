@@ -21,82 +21,20 @@ import type {
   HandObjectProximity,
   BehaviorResult,
 } from './types';
+import {
+  FEATURE_WEIGHTS_LEGACY,
+  FEATURE_WEIGHTS_V1_UPGRADED,
+  THRESHOLDS,
+  OPTIMAL_RANGES,
+} from './scoring/constants';
+import { ExponentialMovingAverage } from './scoring/ema';
+import { ContradictionDetector } from './contradiction-detector';
 
-// ==================== FEATURE WEIGHTS ====================
-
-/**
- * Original (v1.0) weights — used when no context features are present.
- * Preserved for legacy code paths and Chrome extension fallback.
- */
-const FEATURE_WEIGHTS_LEGACY: Record<string, number> = {
-  ear: 0.15,
-  perclos: 0.12,
-  blinkRate: 0.08,
-  gazeDeviation: 0.10,
-  headPoseStability: 0.12,
-  yawDeviation: 0.08,
-  pitchDeviation: 0.06,
-  fatigueIndex: 0.10,
-  fidgetScore: 0.07,
-  eyebrowRaise: 0.04,
-  mouthOpenness: 0.03,
-  faceDistance: 0.03,
-  facePresence: 0.02,
-};
-
-/**
- * Upgraded (v1.0+) weights — used when context features are available.
- * pitchDeviation is replaced by contextAwarePitch + objectContext +
- * handObjectProximity + temporalPattern (ARCHITECTURE.md §2).
- */
-const FEATURE_WEIGHTS_V1_UPGRADED: Record<string, number> = {
-  // Eye-based (adjusted down slightly to make room for context features)
-  ear: 0.10,
-  perclos: 0.08,
-  blinkRate: 0.05,
-  gazeDeviation: 0.12,        // Slightly raised — gaze still primary signal
-
-  // Head pose
-  headPoseStability: 0.10,
-  yawDeviation: 0.08,
-  // NOTE: pitchDeviation REMOVED — replaced by contextAwarePitch below
-
-  // Fatigue
-  fatigueIndex: 0.07,
-  fidgetScore: 0.04,
-
-  // Micro-expressions
-  mouthOpenness: 0.02,
-
-  // Presence / distance
-  faceDistance: 0.02,
-  facePresence: 0.02,
-
-  // ── NEW context-aware features (ARCHITECTURE §2) ──────────────────
-  contextAwarePitch: 0.12,    // Pitch score gated by object context
-  objectContext: 0.10,        // What objects are visible
-  handObjectProximity: 0.05,  // Hand-object interaction signal
-  temporalPattern: 0.03,      // Temporal classifier consistency bonus
-};
-
-// ==================== THRESHOLDS ====================
-
-const THRESHOLDS = {
-  ATTENTIVE_MIN: 70,
-  DISTRACTED_MIN: 40,
-};
-
-const OPTIMAL_RANGES = {
-  ear: { min: 0.25, max: 0.4 },
-  perclos: { max: 15 },
-  blinkRate: { min: 12, max: 20 },
-  gaze: { maxDeviation: 0.3 },
-  yaw: { maxDeviation: 15 },
-  pitch: { maxDeviation: 15 },
-  fatigueIndex: { max: 30 },
-  fidgetScore: { max: 25 },
-  faceDistance: { min: 0.3, max: 0.7 },
-};
+// Feature weights and thresholds now live in ./scoring/constants.ts — the
+// single source of truth shared with the Chrome extension bundle and kept
+// in sync with v2.0's Python port (see scoring/EQUIVALENCE.md). Re-exported
+// here for any existing callers importing them from this module.
+export { FEATURE_WEIGHTS_LEGACY, FEATURE_WEIGHTS_V1_UPGRADED, THRESHOLDS, OPTIMAL_RANGES };
 
 // ==================== CONTEXT-AWARE HELPERS ====================
 
@@ -183,27 +121,9 @@ function encodeTemporalPattern(
   return behaviorResult?.attentionScore ?? 60; // 60 = neutral when unavailable
 }
 
-// ==================== TEMPORAL SMOOTHING ====================
-
-export class ExponentialMovingAverage {
-  private alpha: number;
-  private value: number | null = null;
-
-  constructor(alpha = 0.15) {
-    this.alpha = alpha;
-  }
-
-  update(newValue: number): number {
-    this.value =
-      this.value === null
-        ? newValue
-        : this.alpha * newValue + (1 - this.alpha) * this.value;
-    return this.value;
-  }
-
-  getValue(): number | null { return this.value; }
-  reset(): void { this.value = null; }
-}
+// ExponentialMovingAverage now lives in ./scoring/ema.ts — re-exported for
+// existing callers importing it from this module.
+export { ExponentialMovingAverage };
 
 // ==================== FEATURE SCORING ====================
 
@@ -327,6 +247,7 @@ function scoreFeature(
 
 export class MLEngine {
   private scoreEMA = new ExponentialMovingAverage(0.15);
+  private contradictionDetector = new ContradictionDetector();
   private predictionHistory: MLPrediction[] = [];
   private readonly MAX_HISTORY = 100;
 
@@ -432,12 +353,18 @@ export class MLEngine {
       featureContributions[name] = result.contribution;
     }
 
+    // Cross-Modal Contradiction Vector — computed alongside rawScore but
+    // never folded into it (see contradiction-detector.ts).
+    const contradiction = this.contradictionDetector.compute(metrics);
+
     const prediction: MLPrediction = {
       attentionState,
       confidence,
       rawScore: Math.round(smoothedScore),
       featureImportance,
       featureContributions,
+      contradictionIndex: contradiction.contradictionIndex,
+      contradictionCategory: contradiction.category,
     };
 
     this.predictionHistory.push(prediction);
@@ -497,6 +424,7 @@ export class MLEngine {
 
   reset(): void {
     this.scoreEMA.reset();
+    this.contradictionDetector.reset();
     this.predictionHistory = [];
   }
 }

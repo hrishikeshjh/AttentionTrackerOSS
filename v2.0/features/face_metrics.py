@@ -86,17 +86,82 @@ def calculate_mar(lm: list[Point2D]) -> float | None:
     return v / h if h else None
 
 
+HEAD_POSE_YAW_GAIN = 50
+HEAD_POSE_PITCH_GAIN = 33.3  # 50 / 1.5 -- see v1.0/src/lib/scoring/pose/head-pose.ts
+
+
 def calculate_head_pose(lm: list[Point2D]) -> tuple[float | None, float | None, float | None]:
-    """Returns (yaw, pitch, roll) in approximate degrees."""
-    nose, l_eye, r_eye, chin = lm[30], lm[36], lm[45], lm[8]
+    """Returns (yaw, pitch, roll) in approximate degrees.
+
+    Canonical formula -- matches v1.0/src/lib/scoring/pose/head-pose.ts.
+    Both yaw and pitch are normalized by the SAME reference distance
+    (interocular distance) rather than pitch using nose-chin distance, which
+    foreshortens as the head pitches and biased the pitch signal against
+    itself at extreme angles. Any change here must be mirrored in the TS
+    version in the same PR (see v1.0/src/lib/scoring/EQUIVALENCE.md) and vice
+    versa.
+    """
+    nose, l_eye, r_eye = lm[30], lm[36], lm[45]
     eye_mid = Point2D((l_eye.x + r_eye.x) / 2, (l_eye.y + r_eye.y) / 2)
     eye_dist = _dist(l_eye, r_eye) or 1
-    nc_dist  = _dist(nose, chin) or 1
 
-    yaw   = (nose.x - eye_mid.x) / eye_dist * 50
-    pitch = (nose.y - eye_mid.y) / nc_dist * 50
+    yaw   = (nose.x - eye_mid.x) / eye_dist * HEAD_POSE_YAW_GAIN
+    pitch = (nose.y - eye_mid.y) / eye_dist * HEAD_POSE_PITCH_GAIN
     roll  = math.degrees(math.atan2(r_eye.y - l_eye.y, r_eye.x - l_eye.x))
     return yaw, pitch, roll
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def calculate_gaze(lm: list[Point2D]) -> tuple[float | None, float | None]:
+    """Returns (gaze_x, gaze_y) in [-1, 1].
+
+    Canonical formula -- matches v1.0/src/lib/scoring/pose/gaze.ts. Note
+    this was previously NOT PORTED to v2.0 at all: room_analyzer.py
+    hardcoded gaze_x=None/gaze_y=None when constructing FaceMetricsResult,
+    which the behavior classifier's feature extraction then silently
+    defaulted to 0 ("looking dead center") via `m.gaze_x or 0` -- a real,
+    previously-undocumented bug, not a hypothetical.
+
+    Same known accuracy ceiling as the TS version applies: this approximates
+    iris position as the centroid of eyelid landmarks (no true iris
+    landmarks in a 68-point model), so it can't detect eyes-only glances
+    without head movement.
+    """
+    l_eye_l, l_eye_r = lm[36], lm[39]
+    r_eye_l, r_eye_r = lm[42], lm[45]
+
+    l_iris = Point2D(
+        (lm[37].x + lm[38].x + lm[40].x + lm[41].x) / 4,
+        (lm[37].y + lm[38].y + lm[40].y + lm[41].y) / 4,
+    )
+    r_iris = Point2D(
+        (lm[43].x + lm[44].x + lm[46].x + lm[47].x) / 4,
+        (lm[43].y + lm[44].y + lm[46].y + lm[47].y) / 4,
+    )
+
+    l_eye_width = _dist(l_eye_l, l_eye_r)
+    r_eye_width = _dist(r_eye_l, r_eye_r)
+    if l_eye_width == 0 or r_eye_width == 0:
+        return None, None
+
+    l_gaze_x = ((l_iris.x - l_eye_l.x) / l_eye_width - 0.5) * 2
+    r_gaze_x = ((r_iris.x - r_eye_l.x) / r_eye_width - 0.5) * 2
+
+    l_eye_center_y = (l_eye_l.y + l_eye_r.y + lm[37].y + lm[41].y) / 4
+    r_eye_center_y = (r_eye_l.y + r_eye_r.y + lm[43].y + lm[47].y) / 4
+    l_eye_height = abs(lm[37].y - lm[41].y)
+    r_eye_height = abs(lm[43].y - lm[47].y)
+
+    l_gaze_y = (l_eye_center_y - l_iris.y) / l_eye_height if l_eye_height > 0 else 0
+    r_gaze_y = (r_eye_center_y - r_iris.y) / r_eye_height if r_eye_height > 0 else 0
+
+    return (
+        _clamp((l_gaze_x + r_gaze_x) / 2, -1, 1),
+        _clamp((l_gaze_y + r_gaze_y) / 2, -1, 1),
+    )
 
 
 # ── Stateful detectors (one instance per tracked person) ─────────────────────
@@ -177,14 +242,25 @@ class HeadPoseTracker:
         return max(0.0, min(100.0, 100 - combined / 10))
 
     def fidget(self) -> float:
+        """Fidget score from an EMA-smoothed pose stream (alpha=0.4), not raw
+        frame-to-frame differences -- matches
+        v1.0/src/lib/scoring/trackers.ts's HeadPoseTracker.getFidgetScore.
+        Differencing raw yaw/pitch/roll scores ordinary detector jitter
+        identically to genuine rapid head movement; smoothing first rejects
+        single-frame noise while still tracking sustained motion.
+        """
         if len(self._history) < 10:
             return 0.0
-        diffs = [
-            abs(self._history[i][1] - self._history[i-1][1]) +
-            abs(self._history[i][2] - self._history[i-1][2]) +
-            abs(self._history[i][3] - self._history[i-1][3])
-            for i in range(1, len(self._history))
-        ]
+        alpha = 0.4
+        sy, sp, sr = self._history[0][1], self._history[0][2], self._history[0][3]
+        diffs = []
+        for i in range(1, len(self._history)):
+            prev_y, prev_p, prev_r = sy, sp, sr
+            _, cy, cp, cr = self._history[i]
+            sy = alpha * cy + (1 - alpha) * sy
+            sp = alpha * cp + (1 - alpha) * sp
+            sr = alpha * cr + (1 - alpha) * sr
+            diffs.append(abs(sy - prev_y) + abs(sp - prev_p) + abs(sr - prev_r))
         return min(100.0, sum(diffs) / len(diffs) * 5)
 
     def pose_variance(self) -> float:

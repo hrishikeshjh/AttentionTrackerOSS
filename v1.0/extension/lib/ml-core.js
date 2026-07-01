@@ -11,13 +11,20 @@ const NORMAL_BLINK_RATE_MIN = 15;
 const NORMAL_BLINK_RATE_MAX = 20;
 const FATIGUE_EAR_THRESHOLD = 0.25;
 
-// VERY STRICT THRESHOLDS
+// SCORING_PROFILE = 'strict-extension' (explicit, documented deviation from
+// the web app's canonical THRESHOLDS/FEATURE_WEIGHTS in
+// src/lib/scoring/constants.ts, which use ATTENTIVE_MIN=70/DISTRACTED_MIN=40
+// and a less gaze/pose-dominant weight table). This is a deliberate product
+// tuning for the video-call use case ("looking away during a meeting should
+// register immediately"), not accidental drift — unlike the formula bugs
+// fixed elsewhere in this file (head-pose normalizer, gaze multiplier,
+// stability divisor, fidget pre-smoothing), which WERE drift and have been
+// unified to match the canonical scoring core.
 const THRESHOLDS = {
-    ATTENTIVE_MIN: 80,  // Must be very engaged
-    DISTRACTED_MIN: 50, // Middle ground
+    ATTENTIVE_MIN: 80,
+    DISTRACTED_MIN: 50,
 };
 
-// Feature weights - HEAVILY emphasize gaze and head pose
 const FEATURE_WEIGHTS = {
     gazeDeviation: 0.25,      // PRIMARY - gaze is critical
     yawDeviation: 0.20,       // Looking left/right is BAD
@@ -84,6 +91,17 @@ function calculateMAR(landmarks) {
     return vertDist / horzDist;
 }
 
+// Head-pose and gaze formulas below are the CANONICAL versions — identical
+// to v1.0/src/lib/scoring/pose/{head-pose,gaze}.ts. This file previously had
+// its own independently-tuned "more sensitive" variants (nose-cheek
+// asymmetry for yaw, a different pitch normalizer, and a 3x gaze
+// multiplier vs. the web app's 2x), which meant the extension and web app
+// scored identical input landmarks differently. Until an esbuild bundle
+// pipeline lets the extension import the TS scoring package directly (see
+// scoring/EQUIVALENCE.md), these are kept in sync by hand — any change to
+// the TS formulas must be ported here in the same PR.
+const HEAD_POSE_CALIBRATION = { YAW_GAIN: 50, PITCH_GAIN: 33.3 };
+
 function calculateHeadPose(landmarks) {
     if (!landmarks || landmarks.length < 68) return { yaw: null, pitch: null, roll: null };
 
@@ -91,8 +109,6 @@ function calculateHeadPose(landmarks) {
     const leftEye = landmarks[36];
     const rightEye = landmarks[45];
     const chin = landmarks[8];
-    const leftCheek = landmarks[0];
-    const rightCheek = landmarks[16];
 
     if (!nose || !leftEye || !rightEye || !chin) return { yaw: null, pitch: null, roll: null };
 
@@ -102,47 +118,36 @@ function calculateHeadPose(landmarks) {
     };
 
     const eyeDist = distance(leftEye, rightEye);
-    const noseChinDist = distance(nose, chin);
-    const faceWidth = distance(leftCheek, rightCheek);
+    if (eyeDist === 0) return { yaw: null, pitch: null, roll: null };
 
-    if (eyeDist === 0 || noseChinDist === 0) return { yaw: null, pitch: null, roll: null };
-
-    // MORE SENSITIVE yaw calculation using nose-to-cheek asymmetry
-    const leftNoseDist = distance(nose, leftCheek);
-    const rightNoseDist = distance(nose, rightCheek);
-    const asymmetry = (rightNoseDist - leftNoseDist) / faceWidth;
-    const yaw = asymmetry * 100;  // Very sensitive to turning
-
-    // Pitch from nose position relative to eye-chin line
-    const pitch = ((nose.y - eyeMidpoint.y) / noseChinDist - 0.35) * 100;
-
-    // Roll from eye angle
+    // Both yaw and pitch use the SAME normalizer (interocular distance)
+    // rather than pitch using nose-chin distance, which foreshortens as the
+    // head pitches and biased the old pitch signal against itself.
+    const yawRatio = (nose.x - eyeMidpoint.x) / eyeDist;
+    const pitchRatio = (nose.y - eyeMidpoint.y) / eyeDist;
     const roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x) * (180 / Math.PI);
 
-    return { yaw, pitch, roll };
+    return {
+        yaw: yawRatio * HEAD_POSE_CALIBRATION.YAW_GAIN,
+        pitch: pitchRatio * HEAD_POSE_CALIBRATION.PITCH_GAIN,
+        roll,
+    };
 }
 
 function calculateGazeDirection(landmarks) {
     if (!landmarks || landmarks.length < 68) return { gazeX: null, gazeY: null };
 
-    // Left eye
     const leftEyeLeft = landmarks[36];
     const leftEyeRight = landmarks[39];
-    const leftEyeCenter = {
-        x: (leftEyeLeft.x + leftEyeRight.x) / 2,
-        y: (leftEyeLeft.y + leftEyeRight.y) / 2,
-    };
+    const rightEyeLeft = landmarks[42];
+    const rightEyeRight = landmarks[45];
+    if (!leftEyeLeft || !leftEyeRight || !rightEyeLeft || !rightEyeRight) {
+        return { gazeX: null, gazeY: null };
+    }
+
     const leftIrisCenter = {
         x: (landmarks[37].x + landmarks[38].x + landmarks[40].x + landmarks[41].x) / 4,
         y: (landmarks[37].y + landmarks[38].y + landmarks[40].y + landmarks[41].y) / 4,
-    };
-
-    // Right eye
-    const rightEyeLeft = landmarks[42];
-    const rightEyeRight = landmarks[45];
-    const rightEyeCenter = {
-        x: (rightEyeLeft.x + rightEyeRight.x) / 2,
-        y: (rightEyeLeft.y + rightEyeRight.y) / 2,
     };
     const rightIrisCenter = {
         x: (landmarks[43].x + landmarks[44].x + landmarks[46].x + landmarks[47].x) / 4,
@@ -151,22 +156,22 @@ function calculateGazeDirection(landmarks) {
 
     const leftEyeWidth = distance(leftEyeLeft, leftEyeRight);
     const rightEyeWidth = distance(rightEyeLeft, rightEyeRight);
-
     if (leftEyeWidth === 0 || rightEyeWidth === 0) return { gazeX: null, gazeY: null };
 
-    // Calculate gaze X (left-right) - VERY SENSITIVE
-    const leftGazeX = ((leftIrisCenter.x - leftEyeCenter.x) / leftEyeWidth) * 3;
-    const rightGazeX = ((rightIrisCenter.x - rightEyeCenter.x) / rightEyeWidth) * 3;
+    const leftGazeX = ((leftIrisCenter.x - leftEyeLeft.x) / leftEyeWidth - 0.5) * 2;
+    const rightGazeX = ((rightIrisCenter.x - rightEyeLeft.x) / rightEyeWidth - 0.5) * 2;
 
-    // Calculate gaze Y (up-down) - VERY SENSITIVE
-    const leftEyeHeight = distance(landmarks[37], landmarks[41]) || 1;
-    const rightEyeHeight = distance(landmarks[43], landmarks[47]) || 1;
-    const leftGazeY = ((leftIrisCenter.y - leftEyeCenter.y) / leftEyeHeight) * 3;
-    const rightGazeY = ((rightIrisCenter.y - rightEyeCenter.y) / rightEyeHeight) * 3;
+    const leftEyeCenterY = (leftEyeLeft.y + leftEyeRight.y + landmarks[37].y + landmarks[41].y) / 4;
+    const rightEyeCenterY = (rightEyeLeft.y + rightEyeRight.y + landmarks[43].y + landmarks[47].y) / 4;
+    const leftEyeHeight = Math.abs(landmarks[37].y - landmarks[41].y);
+    const rightEyeHeight = Math.abs(landmarks[43].y - landmarks[47].y);
+
+    const leftGazeY = leftEyeHeight > 0 ? (leftEyeCenterY - leftIrisCenter.y) / leftEyeHeight : 0;
+    const rightGazeY = rightEyeHeight > 0 ? (rightEyeCenterY - rightIrisCenter.y) / rightEyeHeight : 0;
 
     return {
-        gazeX: clamp((leftGazeX + rightGazeX) / 2, -1.5, 1.5),
-        gazeY: clamp((leftGazeY + rightGazeY) / 2, -1.5, 1.5),
+        gazeX: clamp((leftGazeX + rightGazeX) / 2, -1, 1),
+        gazeY: clamp((leftGazeY + rightGazeY) / 2, -1, 1),
     };
 }
 
@@ -327,20 +332,34 @@ class HeadPoseTracker {
         const pitches = this.poseHistory.map(p => p.pitch);
         const rolls = this.poseHistory.map(p => p.roll);
 
+        // Canonical divisor (/10) — matches src/lib/scoring/trackers.ts.
+        // The previous /3 divisor wasn't a deliberate strictness choice, it
+        // was drift: it changes what "stability" *means* (a formula
+        // correctness issue), unlike THRESHOLDS/FEATURE_WEIGHTS above which
+        // are a documented, intentional strict-extension product profile.
         const combinedVar = (calculateVariance(yaws) + calculateVariance(pitches) + calculateVariance(rolls) * 0.5) / 2.5;
-
-        return clamp(100 - (combinedVar / 3), 0, 100);  // More sensitive
+        return clamp(100 - (combinedVar / 10), 0, 100);
     }
 
     getFidgetScore() {
         if (this.poseHistory.length < 10) return 0;
 
+        // Pre-smooth before differencing (alpha=0.4) so ordinary detector
+        // jitter (sub-pixel landmark noise) isn't scored identically to
+        // genuine rapid head movement — matches
+        // src/lib/scoring/trackers.ts's HeadPoseTracker.getFidgetScore.
+        const alpha = 0.4;
+        let sy = this.poseHistory[0].yaw;
+        let sp = this.poseHistory[0].pitch;
+        let sr = this.poseHistory[0].roll;
         const diffs = [];
         for (let i = 1; i < this.poseHistory.length; i++) {
-            const prev = this.poseHistory[i - 1];
-            const curr = this.poseHistory[i];
-            const diff = Math.abs(curr.yaw - prev.yaw) + Math.abs(curr.pitch - prev.pitch) + Math.abs(curr.roll - prev.roll);
-            diffs.push(diff);
+            const prevY = sy, prevP = sp, prevR = sr;
+            const cur = this.poseHistory[i];
+            sy = alpha * cur.yaw + (1 - alpha) * sy;
+            sp = alpha * cur.pitch + (1 - alpha) * sp;
+            sr = alpha * cur.roll + (1 - alpha) * sr;
+            diffs.push(Math.abs(sy - prevY) + Math.abs(sp - prevP) + Math.abs(sr - prevR));
         }
 
         const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;

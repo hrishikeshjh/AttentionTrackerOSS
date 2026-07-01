@@ -32,133 +32,160 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from evaluation.behavior_metrics  import BehaviorEvaluator
 from evaluation.tracking_metrics  import TrackingEvaluator, TrackFrame
-from evaluation.occupancy_metrics import OccupancyEvaluator
+# OccupancyEvaluator import removed -- unused until a real per-seat
+# ground-truth annotation format exists (see _eval_occupancy docstring).
 from evaluation.latency_benchmark import LatencyBenchmark, TARGETS_MS
-from training.datasets.base_dataset import BEHAVIOR_CLASSES, CLASS_TO_IDX, WINDOW_SIZE, FEATURE_DIM
+from training.datasets.base_dataset import WINDOW_SIZE, FEATURE_DIM
 
 
 # ── Behavior evaluation ───────────────────────────────────────────────────────
 
+def _skip(reason: str) -> dict:
+    """Standard shape for a section that produced no real evaluation.
+
+    IMPORTANT: never fill this in with fabricated numbers. This runner
+    previously synthesized fake predictions here (`pred = label` when no
+    real model was available, or `pred = label if rng.random() > 0.2 else
+    random_class` when no real dataset was available) which made it
+    indistinguishable from a real evaluation result in the output JSON —
+    those numbers were quoted in README-overall.md as if they were
+    measured. If you are tempted to add a synthetic fallback here, tag its
+    output with "data_source": "synthetic_smoke_test" so it can never again
+    be mistaken for a real result, and do not report it as "targets_met".
+    """
+    logger.warning("  SKIPPED: %s", reason)
+    return {"status": "SKIPPED", "reason": reason, "targets_met": {}}
+
+
 def _eval_behavior(args: argparse.Namespace) -> dict:
     """
-    Run behavior classifier on the classroom test split and compute F1 metrics.
+    Run the real behavior classifier ONNX model on the classroom test split
+    and compute F1 metrics. Returns a SKIPPED result (no numeric score) if
+    either a real dataset or a real model is unavailable -- this function
+    must never emit a score that isn't derived from an actual model
+    prediction against real held-out labels.
     """
     logger.info("Evaluating behavior classifier …")
-    ev = BehaviorEvaluator()
+
+    if not args.classroom:
+        return _skip("no --classroom dataset path provided")
 
     try:
         import onnxruntime as ort
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         sess = ort.InferenceSession(args.model, providers=providers)
-        ort_available = True
         logger.info("  Using ORT session: %s", args.model)
     except Exception as exc:
-        logger.warning("  ORT not available (%s); using rule-based fallback.", exc)
-        ort_available = False
-        sess = None
+        return _skip(f"no usable ONNX model at --model ({exc})")
 
-    if args.classroom:
-        from training.datasets.classroom_loader import ClassroomDataset
-        ds = ClassroomDataset(args.classroom, split="test")
-        for window, label in ds:
-            if ort_available and sess is not None:
-                # window: (W, F) → (1, F, W)
-                x = window.T[np.newaxis, :, :]  # (1, 13, 15)
-                logits = sess.run(["logits"], {"input": x})[0]
-                pred = int(np.argmax(logits))
-            else:
-                # Dummy: predict majority class (for smoke-test)
-                pred = label
-            ev.update(pred, label)
-    else:
-        logger.warning("  No classroom dataset path; generating synthetic results.")
-        rng = np.random.default_rng(42)
-        for _ in range(500):
-            label = rng.integers(0, len(BEHAVIOR_CLASSES))
-            pred  = label if rng.random() > 0.2 else rng.integers(0, len(BEHAVIOR_CLASSES))
-            ev.update(int(pred), int(label))
+    ev = BehaviorEvaluator()
+    from training.datasets.classroom_loader import ClassroomDataset
+    ds = ClassroomDataset(args.classroom, split="test")
+    for window, label in ds:
+        # window: (W, F) → (1, F, W)
+        x = window.T[np.newaxis, :, :]  # (1, 13, 15)
+        logits = sess.run(["logits"], {"input": x})[0]
+        pred = int(np.argmax(logits))
+        ev.update(pred, label)
 
     ev.print_report()
-    return ev.compute()
+    result = ev.compute()
+    result["data_source"] = "real"
+    return result
 
 
 # ── Tracking evaluation ───────────────────────────────────────────────────────
 
 def _eval_tracking(args: argparse.Namespace) -> dict:
     """
-    Evaluate ByteTrack against ground-truth tracks in classroom test clips.
-    Falls back to synthetic data if classroom dataset unavailable.
+    Evaluate the REAL ByteTrack tracker against ground-truth tracks in
+    classroom test clips. Returns a SKIPPED result if no classroom dataset
+    is available -- this must never run the tracker's ground truth through
+    a fixed-offset noise injector and report the result as a tracking score
+    (that measures the noise injector, not the tracker).
     """
     logger.info("Evaluating tracking …")
+
+    if not args.classroom:
+        return _skip("no --classroom dataset path provided")
+
+    import json as _json
+    import cv2
+    from tracking.byte_tracker import ByteTrackWrapper
+    from perception.person_detector import PersonDetector
+
+    classroom_root = Path(args.classroom)
+    ann_dir = classroom_root / "annotations"
+    vid_dir = classroom_root / "videos"
+
     ev = TrackingEvaluator(iou_threshold=0.5, fps=args.fps)
+    detector = PersonDetector()
+    n_clips = 0
 
-    if args.classroom:
-        import json as _json
-        import cv2
-        classroom_root = Path(args.classroom)
-        ann_dir  = classroom_root / "annotations"
-        vid_dir  = classroom_root / "videos"
+    for ann_path in sorted(ann_dir.glob("*.json")):
+        clip_id = ann_path.stem
+        video_path = vid_dir / f"{clip_id}.mp4"
+        if not video_path.exists():
+            logger.warning("  Skipping %s: no matching video file", clip_id)
+            continue
 
-        for ann_path in sorted(ann_dir.glob("*.json")):
-            clip_id  = ann_path.stem
-            with open(ann_path) as f:
-                ann = _json.load(f)
+        with open(ann_path) as f:
+            ann = _json.load(f)
 
-            # Group GT tracks by frame
-            frame_gt: dict[int, list[TrackFrame]] = {}
-            for person in ann.get("persons", []):
-                tid = person["track_id"]
-                for fdata in person.get("frames", []):
-                    fi  = fdata["frame_idx"]
-                    box = fdata.get("bbox_xyxy", [0, 0, 0, 0])
-                    frame_gt.setdefault(fi, []).append(TrackFrame(tid, tuple(box)))
+        frame_gt: dict[int, list[TrackFrame]] = {}
+        for person in ann.get("persons", []):
+            tid = person["track_id"]
+            for fdata in person.get("frames", []):
+                fi = fdata["frame_idx"]
+                box = fdata.get("bbox_xyxy", [0, 0, 0, 0])
+                frame_gt.setdefault(fi, []).append(TrackFrame(tid, tuple(box)))
 
-            if not frame_gt:
-                continue
+        if not frame_gt:
+            continue
 
-            # Simulate tracker (just use GT with ~5% noise for smoke-test)
-            for fi, gt_tracks in sorted(frame_gt.items()):
-                pred_tracks = []
-                for t in gt_tracks:
-                    x1, y1, x2, y2 = t.bbox_xyxy
-                    noise = 5.0
-                    pred_tracks.append(TrackFrame(
-                        t.track_id,
-                        (x1 + noise, y1 + noise, x2 + noise, y2 + noise)
-                    ))
-                ev.update(gt_tracks, pred_tracks)
-    else:
-        logger.warning("  No classroom path; using synthetic tracking data.")
-        rng = np.random.default_rng(0)
-        for _ in range(300):
-            n_gt  = rng.integers(1, 5)
-            gt    = [TrackFrame(i+1, (i*200.0, 100.0, i*200+180.0, 500.0)) for i in range(n_gt)]
-            pred  = [TrackFrame(i+1, (i*200.0+2, 102.0, i*200+182.0, 502.0)) for i in range(n_gt)]
-            ev.update(gt, pred)
+        cap = cv2.VideoCapture(str(video_path))
+        tracker = ByteTrackWrapper(frame_rate=int(args.fps))  # fresh tracker state per clip
+        n_clips += 1
+        fi = 0
+        while cap.isOpened():
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if fi in frame_gt:
+                detections = detector.detect(frame)
+                tracks = tracker.update(detections, frame)
+                pred_tracks = [TrackFrame(t.track_id, tuple(t.bbox_xyxy)) for t in tracks]
+                ev.update(frame_gt[fi], pred_tracks)
+            fi += 1
+        cap.release()
+
+    if n_clips == 0:
+        return _skip("--classroom dataset has no annotation/video pairs to evaluate")
 
     ev.print_report()
-    return ev.compute()
+    result = ev.compute()
+    result["data_source"] = "real"
+    return result
 
 
 # ── Occupancy evaluation ──────────────────────────────────────────────────────
 
 def _eval_occupancy(args: argparse.Namespace) -> dict:
+    """
+    No real-data occupancy evaluation path exists yet -- there is currently
+    no annotation format or loader wiring per-seat ground-truth occupancy
+    (unlike behavior/tracking, which have ClassroomDataset + annotation
+    JSONs). This previously ran a synthetic ~95%-accuracy generator
+    unconditionally and reported it as a real score; that has been removed.
+    Building the real path requires a per-seat occupancy ground-truth
+    annotation format, which is out of scope for this fix -- tracked
+    separately.
+    """
     logger.info("Evaluating seat occupancy …")
-    with open(args.seat_map) as f:
-        import json as _json
-        seat_ids = list(_json.load(f).keys())
-
-    ev = OccupancyEvaluator(seat_ids=seat_ids, fps=args.fps)
-
-    # Synthetic: 95% accuracy baseline
-    rng = np.random.default_rng(7)
-    for _ in range(1000):
-        gt_occ   = set(s for s in seat_ids if rng.random() > 0.3)
-        pred_occ = set(s for s in gt_occ   if rng.random() > 0.05)  # ~95% correct
-        ev.update(pred_occupied=pred_occ, gt_occupied=gt_occ)
-
-    ev.print_report()
-    return ev.compute()
+    return _skip(
+        "no real-data occupancy evaluation path is implemented yet "
+        "(needs a per-seat ground-truth annotation format)"
+    )
 
 
 # ── Latency benchmark ─────────────────────────────────────────────────────────

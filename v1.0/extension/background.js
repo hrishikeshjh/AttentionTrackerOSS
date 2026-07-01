@@ -188,6 +188,31 @@ function stopDataSync() {
     currentSyncTabId = null;
 }
 
+// Standalone mode (offscreen.js) writes lastDetection directly to
+// chrome.storage.local, so the badge can update reactively via
+// onChanged instead of a separate polling timer — this was previously a
+// gap (no polling loop existed for standalone mode, so the badge never
+// updated outside of meet-tab mode). Meet-mode badge updates still go
+// through the 500ms poll in startDataSync above: background.js cannot
+// listen to a third-party page's localStorage directly, so cross-page
+// polling there is an intentional, unavoidable decoupling, not a bug.
+chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local' || !changes.lastDetection) return;
+    if (currentSyncTabId) return; // meet-mode poll already owns badge updates
+
+    const detection = changes.lastDetection.newValue;
+    if (!detection || !detection.prediction) return;
+
+    const score = detection.prediction.rawScore;
+    chrome.action.setBadgeText({ text: String(score) });
+
+    let color;
+    if (score >= 70) color = BADGE_COLORS.high;
+    else if (score >= 40) color = BADGE_COLORS.medium;
+    else color = BADGE_COLORS.low;
+    chrome.action.setBadgeBackgroundColor({ color });
+});
+
 // ==================== MESSAGE HANDLING ====================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

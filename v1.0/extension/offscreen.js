@@ -114,6 +114,60 @@ function stopCamera() {
 }
 
 let frameCount = 0;
+let lastFrameTime = 0;
+let lastWrittenScore = null;
+let lastWriteTime = 0;
+
+// Only 5fps of data is ever consumed downstream (content.js analyzes at
+// 200ms intervals), so running face-api detection unthrottled on every
+// requestAnimationFrame (~60fps) wastes the majority of CPU cycles during
+// video calls, when CPU is already contended by the call's own codec.
+const FRAME_BUDGET_MS = 200; // 5fps target, matches content.js's cadence
+const STORAGE_WRITE_MIN_INTERVAL_MS = 500; // badge/UI doesn't need faster than 2fps
+const STORAGE_WRITE_SCORE_DELTA = 2; // write early if score moved meaningfully
+
+/**
+ * Picks the largest-area detected face instead of trusting detections[0]
+ * (face-api.js's detection order is not a stable, explicit selection
+ * policy — with 2+ faces in frame it can flip between candidates
+ * frame-to-frame, corrupting the fidget/stability trackers, which assume
+ * continuity of a single identity's landmark stream). This is a lightweight
+ * stopgap; the web app uses the fuller PrimaryFaceSelector with
+ * identity-continuity hysteresis from src/lib/scoring/face-selection.ts —
+ * porting that here is pending the extension bundle build (see
+ * scoring/EQUIVALENCE.md).
+ */
+function selectLargestFace(detections) {
+    if (!detections || detections.length === 0) return null;
+    let best = detections[0];
+    let bestArea = best.detection.box.width * best.detection.box.height;
+    for (let i = 1; i < detections.length; i++) {
+        const area = detections[i].detection.box.width * detections[i].detection.box.height;
+        if (area > bestArea) {
+            best = detections[i];
+            bestArea = area;
+        }
+    }
+    return best;
+}
+
+function writeDetectionResult(payload) {
+    // Fire-and-forget: don't block the detection loop on the storage
+    // round-trip, and skip redundant writes when nothing meaningful changed.
+    const now = payload.timestamp;
+    const score = payload.prediction ? payload.prediction.rawScore : null;
+    const scoreChanged = lastWrittenScore === null || score === null ||
+        Math.abs(score - lastWrittenScore) >= STORAGE_WRITE_SCORE_DELTA;
+    const intervalElapsed = now - lastWriteTime >= STORAGE_WRITE_MIN_INTERVAL_MS;
+
+    if (!scoreChanged && !intervalElapsed) return;
+
+    lastWrittenScore = score;
+    lastWriteTime = now;
+    chrome.storage.local.set({ lastDetection: payload }).catch((err) => {
+        console.error('[Offscreen] Storage write failed:', err);
+    });
+}
 
 async function runDetection() {
     if (!isRunning || !modelsLoaded) return;
@@ -123,6 +177,14 @@ async function runDetection() {
         return;
     }
 
+    const frameStart = performance.now();
+    if (frameStart - lastFrameTime < FRAME_BUDGET_MS) {
+        // Not our turn yet — reschedule without doing detection work.
+        animationFrameId = requestAnimationFrame(runDetection);
+        return;
+    }
+    lastFrameTime = frameStart;
+
     try {
         const detections = await faceapi
             .detectAllFaces(webcam, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
@@ -130,9 +192,10 @@ async function runDetection() {
 
         frameCount++;
         const now = Date.now();
+        const primary = selectLargestFace(detections);
 
-        if (detections && detections.length > 0 && metricsAggregator && mlEngine) {
-            const landmarks = detections[0].landmarks.positions;
+        if (primary && metricsAggregator && mlEngine) {
+            const landmarks = primary.landmarks.positions;
 
             const baseMetrics = metricsAggregator.calculateExtendedMetrics(
                 landmarks,
@@ -163,22 +226,20 @@ async function runDetection() {
 
             const prediction = mlEngine.predict(metrics);
 
-            await chrome.storage.local.set({
-                lastDetection: {
-                    timestamp: now,
-                    hasFace: true,
-                    frameCount,
-                    prediction: {
-                        rawScore: prediction.rawScore,
-                        attentionState: prediction.attentionState,
-                        confidence: prediction.confidence
-                    },
-                    metrics: {
-                        blinkRate: metrics.blinkRate,
-                        fatigueIndex: metrics.fatigueIndex,
-                        perclos: metrics.perclos,
-                        ear: metrics.ear
-                    }
+            writeDetectionResult({
+                timestamp: now,
+                hasFace: true,
+                frameCount,
+                prediction: {
+                    rawScore: prediction.rawScore,
+                    attentionState: prediction.attentionState,
+                    confidence: prediction.confidence
+                },
+                metrics: {
+                    blinkRate: metrics.blinkRate,
+                    fatigueIndex: metrics.fatigueIndex,
+                    perclos: metrics.perclos,
+                    ear: metrics.ear
                 }
             });
 
@@ -186,12 +247,10 @@ async function runDetection() {
                 console.log(`[Offscreen] Frame ${frameCount}: Score ${prediction.rawScore}`);
             }
         } else {
-            await chrome.storage.local.set({
-                lastDetection: {
-                    timestamp: now,
-                    hasFace: false,
-                    frameCount
-                }
+            writeDetectionResult({
+                timestamp: now,
+                hasFace: false,
+                frameCount
             });
         }
     } catch (error) {

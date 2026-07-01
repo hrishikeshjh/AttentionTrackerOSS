@@ -104,8 +104,18 @@
       ctx.drawImage(selfVideoElement, 0, 0, canvas.width, canvas.height);
       const det = await faceapi.detectAllFaces(canvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 })).withFaceLandmarks();
 
-      if (det && det.length > 0 && metricsAggregator && mlEngine) {
-        const landmarks = det[0].landmarks.positions;
+      // Pick the largest-area face instead of trusting detector order —
+      // relevant when the self-view tile briefly contains more than one
+      // face (e.g. a gallery-view frame grab) or a picture-in-picture.
+      const primary = det && det.length > 0
+        ? det.reduce((best, d) =>
+            d.detection.box.width * d.detection.box.height >
+            best.detection.box.width * best.detection.box.height ? d : best
+          )
+        : null;
+
+      if (primary && metricsAggregator && mlEngine) {
+        const landmarks = primary.landmarks.positions;
         const metrics = metricsAggregator.calculateExtendedMetrics(landmarks, canvas.width, canvas.height, Date.now());
         const prediction = mlEngine.predict(metrics);
         return { prediction, metrics, hasFace: true };

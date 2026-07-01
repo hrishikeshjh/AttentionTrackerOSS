@@ -141,6 +141,13 @@ export type MLPrediction = {
   rawScore: number; // 0-100 before classification
   featureImportance: Record<string, number>; // feature name -> importance weight
   featureContributions: Record<string, number>; // feature name -> contribution to score
+
+  // ── Cross-Modal Contradiction Vector (see contradiction-detector.ts) ──
+  // Exposed as a SIBLING signal, never folded into rawScore/confidence —
+  // downstream consumers decide what to do with disagreement, it isn't
+  // averaged away before it reaches them.
+  contradictionIndex?: number; // 0-1, EMA-smoothed
+  contradictionCategory?: 'coherent' | 'fatigue_masking' | 'prop_without_engagement' | 'context_conflict';
 };
 
 // Session-level analytics
