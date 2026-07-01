@@ -43,10 +43,17 @@ class TestFeatureExtractorIntegration:
         assert v.dtype == np.float32
 
     def test_feature_vector_bounded(self):
+        # gaze_x/gaze_y/pitch_norm/yaw_norm (indices 0-3) are in [-1, 1] to
+        # match realistic_synthetic_loader.py and
+        # inference/behavior_classifier.py::_extract -- everything else
+        # (EAR, PERCLOS, stability, one-hots, fidget, proximity) is [0, 1].
+        # See features/feature_vector.py's module docstring for the
+        # train/inference distribution-mismatch bug this fixes.
         from training.feature_extractor import extract_feature_vector
         m = self._metrics(pitch=-45.0, yaw=30.0, perclos=80.0)
         v = extract_feature_vector(m)
-        assert np.all(v >= 0.0) and np.all(v <= 1.0), f"Out-of-bounds: {v}"
+        assert np.all(v[:4] >= -1.0) and np.all(v[:4] <= 1.0), f"Out-of-bounds [0:4]: {v[:4]}"
+        assert np.all(v[4:] >= 0.0) and np.all(v[4:] <= 1.0), f"Out-of-bounds [4:]: {v[4:]}"
 
     def test_phone_one_hot(self):
         from training.feature_extractor import extract_feature_vector
@@ -93,16 +100,18 @@ class TestDatasetBase:
         n_frames = 50
         frames = [np.zeros(FEATURE_DIM, dtype=np.float32) for _ in range(n_frames)]
         labels = list(range(n_frames))
-        windows, y = BaseBehaviorDataset.build_windows(frames, labels,
-                                                        window_size=WINDOW_SIZE, stride=1)
+        windows, y, groups = BaseBehaviorDataset.build_windows(
+            frames, labels, window_size=WINDOW_SIZE, stride=1, group_id="clip_a")
         assert windows.shape == (n_frames - WINDOW_SIZE + 1, WINDOW_SIZE, FEATURE_DIM)
         assert y.shape == (n_frames - WINDOW_SIZE + 1,)
+        assert groups.shape == y.shape
+        assert np.all(groups == "clip_a")
 
     def test_build_windows_label_is_last_frame(self):
         from training.datasets.base_dataset import BaseBehaviorDataset, FEATURE_DIM, WINDOW_SIZE
         frames = [np.zeros(FEATURE_DIM, dtype=np.float32)] * 20
         labels = list(range(20))
-        _, y = BaseBehaviorDataset.build_windows(frames, labels, window_size=WINDOW_SIZE, stride=1)
+        _, y, _ = BaseBehaviorDataset.build_windows(frames, labels, window_size=WINDOW_SIZE, stride=1)
         # Label of first window = label of frame at index WINDOW_SIZE-1
         assert y[0] == WINDOW_SIZE - 1
 
@@ -110,8 +119,9 @@ class TestDatasetBase:
         from training.datasets.base_dataset import BaseBehaviorDataset, FEATURE_DIM, WINDOW_SIZE
         frames = [np.zeros(FEATURE_DIM, dtype=np.float32)] * (WINDOW_SIZE - 1)
         labels = list(range(WINDOW_SIZE - 1))
-        windows, y = BaseBehaviorDataset.build_windows(frames, labels)
+        windows, y, groups = BaseBehaviorDataset.build_windows(frames, labels)
         assert len(windows) == 0
+        assert len(groups) == 0
 
     def test_encode_feature_shape(self):
         from training.datasets.base_dataset import BaseBehaviorDataset, FEATURE_DIM

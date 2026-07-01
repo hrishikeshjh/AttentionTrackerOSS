@@ -41,12 +41,16 @@ from __future__ import annotations
 import csv
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Generator
 
 import numpy as np
 
 from .base_dataset import BaseBehaviorDataset, CLASS_TO_IDX, FEATURE_DIM, WINDOW_SIZE
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from features.feature_vector import extract_feature_vector_from_landmarks
 
 logger = logging.getLogger("cognen.datasets.daisee")
 
@@ -132,44 +136,23 @@ class DAiSEEDataset(BaseBehaviorDataset):
         """
         Extract 13-dim feature vector from a single BGR frame.
         Falls back to zeros if no face is detected.
+
+        Uses the canonical extract_feature_vector_from_landmarks (calls
+        calculate_ear/calculate_head_pose/calculate_gaze from
+        features/face_metrics.py) rather than a hand-rolled EAR/pitch/gaze
+        formula -- previously this method reimplemented its own crude
+        versions of all three, and its gaze_x/gaze_y remap to [0,1]
+        disagreed with the [-1,1] convention used everywhere else (the
+        encoding-mismatch bug fixed in features/feature_vector.py).
         """
         det = self._get_face_detector()
         lms = det.detect(frame)
         if not lms:
             return np.zeros(FEATURE_DIM, dtype=np.float32)
 
-        pts = lms[0]  # list[Point2D], 68 points
+        return extract_feature_vector_from_landmarks(lms[0])
 
-        # EAR — right eye 36-41, left eye 42-47
-        def _ear(indices: list[int]) -> float:
-            p = [pts[i] for i in indices]
-            v1 = np.hypot(p[1].x - p[5].x, p[1].y - p[5].y)
-            v2 = np.hypot(p[2].x - p[4].x, p[2].y - p[4].y)
-            h  = np.hypot(p[0].x - p[3].x, p[0].y - p[3].y)
-            return (v1 + v2) / (2.0 * h + 1e-6)
-
-        ear = (_ear(list(range(36, 42))) + _ear(list(range(42, 48)))) / 2.0
-
-        # Rough gaze from eye centre vs face centre
-        eye_cx = (pts[36].x + pts[45].x) / 2.0
-        eye_cy = (pts[36].y + pts[45].y) / 2.0
-        nose   = pts[30]
-        gaze_x = float(np.clip((eye_cx - nose.x) / 50.0, -1, 1)) * 0.5 + 0.5
-        gaze_y = float(np.clip((eye_cy - nose.y) / 50.0, -1, 1)) * 0.5 + 0.5
-
-        # Rough head pitch from nose-to-chin angle
-        chin  = pts[8]
-        dy    = chin.y - nose.y
-        pitch_norm = float(np.clip(dy / 100.0, -1, 1))
-
-        return self.encode_feature(
-            gaze_x=gaze_x,
-            gaze_y=gaze_y,
-            pitch_norm=pitch_norm,
-            ear=float(np.clip(ear, 0, 1)),
-        )
-
-    def _iter_samples(self) -> Generator[tuple[np.ndarray, int], None, None]:
+    def _iter_samples(self) -> Generator[tuple[np.ndarray, int, object], None, None]:
         try:
             import cv2
         except ImportError:
@@ -204,10 +187,11 @@ class DAiSEEDataset(BaseBehaviorDataset):
             cap.release()
             clips_seen += 1
 
-            windows, y = self.build_windows(
+            windows, y, groups = self.build_windows(
                 frame_features, frame_labels,
                 window_size=self.window_size,
                 stride=self.stride,
+                group_id=clip_id,
             )
             for i in range(len(y)):
-                yield windows[i], int(y[i])
+                yield windows[i], int(y[i]), groups[i]

@@ -39,6 +39,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Generator
 
@@ -48,15 +49,10 @@ from .base_dataset import (
     BaseBehaviorDataset, CLASS_TO_IDX, BEHAVIOR_CLASSES, FEATURE_DIM, WINDOW_SIZE
 )
 
-logger = logging.getLogger("cognen.datasets.classroom")
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from features.feature_vector import extract_feature_vector_from_landmarks
 
-_PROXIMITY_CODE: dict[str, float] = {
-    "hands_not_visible": 0.0,
-    "hands_on_desk":     0.25,
-    "holding_pen":       0.50,
-    "holding_book":      0.75,
-    "holding_phone":     1.00,
-}
+logger = logging.getLogger("cognen.datasets.classroom")
 
 
 class ClassroomDataset(BaseBehaviorDataset):
@@ -115,45 +111,26 @@ class ClassroomDataset(BaseBehaviorDataset):
         hand_proximity: str,
         detected_objects: list[str],
     ) -> np.ndarray:
+        """
+        Uses the canonical extract_feature_vector_from_landmarks (calls
+        calculate_ear/calculate_head_pose/calculate_gaze from
+        features/face_metrics.py) instead of a hand-rolled pitch/EAR
+        formula -- this also fills in gaze_x/gaze_y and yaw_norm, which
+        the previous version of this method never computed at all.
+        """
         det = self._get_face_detector()
         lms = det.detect(face_crop)
 
         if not lms:
-            return self.encode_feature(
-                has_none=1.0,
-                proximity_code=_PROXIMITY_CODE.get(hand_proximity, 0.0),
+            return extract_feature_vector_from_landmarks(
+                [], detected_objects=detected_objects, hand_proximity=hand_proximity,
             )
 
-        pts   = lms[0]
-        nose  = pts[30]
-        chin  = pts[8]
-        pitch_norm = float(np.clip((chin.y - nose.y) / 100.0, -1, 1))
-
-        def _ear(indices):
-            p  = [pts[i] for i in indices]
-            v1 = np.hypot(p[1].x - p[5].x, p[1].y - p[5].y)
-            v2 = np.hypot(p[2].x - p[4].x, p[2].y - p[4].y)
-            h  = np.hypot(p[0].x - p[3].x, p[0].y - p[3].y)
-            return (v1 + v2) / (2.0 * h + 1e-6)
-
-        ear = (_ear(range(36, 42)) + _ear(range(42, 48))) / 2.0
-
-        has_book   = float("book"   in detected_objects or "notebook" in detected_objects)
-        has_phone  = float("phone"  in detected_objects)
-        has_laptop = float("laptop" in detected_objects)
-        has_none   = float(not (has_book or has_phone or has_laptop))
-
-        return self.encode_feature(
-            pitch_norm=pitch_norm,
-            ear=float(np.clip(ear, 0, 1)),
-            has_book=has_book,
-            has_phone=has_phone,
-            has_laptop=has_laptop,
-            has_none=has_none,
-            proximity_code=_PROXIMITY_CODE.get(hand_proximity, 0.0),
+        return extract_feature_vector_from_landmarks(
+            lms[0], detected_objects=detected_objects, hand_proximity=hand_proximity,
         )
 
-    def _iter_samples(self) -> Generator[tuple[np.ndarray, int], None, None]:
+    def _iter_samples(self) -> Generator[tuple[np.ndarray, int, object], None, None]:
         try:
             import cv2
         except ImportError:
@@ -217,10 +194,11 @@ class ClassroomDataset(BaseBehaviorDataset):
                     frame_features.append(feats)
                     frame_labels.append(CLASS_TO_IDX[behavior])
 
-                windows, y = self.build_windows(
+                windows, y, groups = self.build_windows(
                     frame_features, frame_labels,
                     window_size=self.window_size,
                     stride=self.stride,
+                    group_id=f"{clip_id}_{person.get('track_id')}",
                 )
                 for i in range(len(y)):
-                    yield windows[i], int(y[i])
+                    yield windows[i], int(y[i]), groups[i]

@@ -45,9 +45,15 @@ class BaseBehaviorDataset(abc.ABC):
     """
     Abstract dataset. Subclasses yield sliding-window feature arrays.
 
-    Each sample is a tuple (window, label):
-        window : np.ndarray, shape (WINDOW_SIZE, FEATURE_DIM), dtype float32
-        label  : int in [0, 5]
+    Each sample is a tuple (window, label, group_id):
+        window   : np.ndarray, shape (WINDOW_SIZE, FEATURE_DIM), dtype float32
+        label    : int in [0, 5]
+        group_id : hashable identifier (e.g. clip_id, or f"{clip_id}_{track_id}")
+            shared by every window drawn from the same underlying clip/subject.
+            None for datasets with no natural grouping (e.g. fully independent
+            synthetic samples). Used by train_classifier.py's GroupShuffleSplit
+            to prevent overlapping sliding windows from the same clip leaking
+            across the train/val split.
     """
 
     CLASSES      = BEHAVIOR_CLASSES
@@ -65,10 +71,10 @@ class BaseBehaviorDataset(abc.ABC):
         self.split = split
 
     @abc.abstractmethod
-    def _iter_samples(self) -> Generator[tuple[np.ndarray, int], None, None]:
-        """Yield (window_array, label_index) tuples."""
+    def _iter_samples(self) -> Generator[tuple[np.ndarray, int, object], None, None]:
+        """Yield (window_array, label_index, group_id) tuples."""
 
-    def __iter__(self) -> Iterator[tuple[np.ndarray, int]]:
+    def __iter__(self) -> Iterator[tuple[np.ndarray, int, object]]:
         return self._iter_samples()
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -79,7 +85,8 @@ class BaseBehaviorDataset(abc.ABC):
         labels: list[int],
         window_size: int = WINDOW_SIZE,
         stride: int = 1,
-    ) -> tuple[np.ndarray, np.ndarray]:
+        group_id: object = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Slide a window over a per-frame feature sequence.
 
@@ -88,23 +95,30 @@ class BaseBehaviorDataset(abc.ABC):
             labels:      Per-frame label indices, length == len(frames).
             window_size: Number of frames per window.
             stride:      Step between consecutive windows.
+            group_id:    Identifier shared by every window this call produces
+                (e.g. a clip_id) -- see class docstring. None if the caller
+                has no natural grouping for these frames.
 
         Returns:
             windows : np.ndarray (N, window_size, FEATURE_DIM) float32
             y       : np.ndarray (N,) int64 — label of the *last* frame
+            groups  : np.ndarray (N,) object — group_id repeated per window
         """
         n = len(frames)
         if n < window_size:
-            return np.empty((0, window_size, FEATURE_DIM), dtype=np.float32), np.empty(0, dtype=np.int64)
+            return (np.empty((0, window_size, FEATURE_DIM), dtype=np.float32),
+                    np.empty(0, dtype=np.int64),
+                    np.empty(0, dtype=object))
 
-        windows, y = [], []
+        windows, y, groups = [], [], []
         for start in range(0, n - window_size + 1, stride):
             end = start + window_size
             win = np.stack(frames[start:end]).astype(np.float32)  # (W, F)
             windows.append(win)
             y.append(labels[end - 1])  # label of last frame in window
+            groups.append(group_id)
 
-        return np.stack(windows), np.array(y, dtype=np.int64)
+        return np.stack(windows), np.array(y, dtype=np.int64), np.array(groups, dtype=object)
 
     @staticmethod
     def encode_feature(

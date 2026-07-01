@@ -47,9 +47,9 @@
     "face-api.js": "^0.22.2",
     "firebase": "^11.9.1",
     "genkit": "^1.20.0",
-    "jspdf": "^2.5.1",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.475.0",
-    "next": "15.3.3",
+    "next": "^15.5.19",
     "onnxruntime-web": "^1.24.3",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
@@ -68,6 +68,11 @@
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "typescript": "^5",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.9"
+  },
+  "overrides": {
+    "node-fetch": "^2.6.7",
+    "@opentelemetry/sdk-node": "^0.219.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.77.0"
   }
 }

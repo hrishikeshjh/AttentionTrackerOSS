@@ -451,9 +451,11 @@ class RealisticSyntheticDataset(BaseBehaviorDataset):
     def __len__(self) -> int:
         return len(self._labels)
 
-    def _iter_samples(self) -> Generator[tuple[np.ndarray, int], None, None]:
+    def _iter_samples(self) -> Generator[tuple[np.ndarray, int, object], None, None]:
+        # group_id=None: each synthetic window is independently generated,
+        # no real subject/clip continuity to leak across a split.
         for window, label in zip(self._windows, self._labels):
-            yield window, int(label)
+            yield window, int(label), None
 
     def class_distribution(self) -> dict[str, int]:
         """Return count per class label."""

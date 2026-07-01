@@ -26,12 +26,16 @@ Engagement score → CognEn behavior mapping:
 from __future__ import annotations
 import csv
 import logging
+import sys
 from pathlib import Path
 from typing import Generator
 
 import numpy as np
 
 from .base_dataset import BaseBehaviorDataset, CLASS_TO_IDX, FEATURE_DIM, WINDOW_SIZE
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from features.feature_vector import extract_feature_vector_from_landmarks
 
 logger = logging.getLogger("cognen.datasets.engagenet")
 
@@ -120,6 +124,15 @@ class EngageNetDataset(BaseBehaviorDataset):
         return self._face_det
 
     def _frame_features(self, img_path: Path) -> np.ndarray:
+        """
+        Uses the canonical extract_feature_vector_from_landmarks (calls
+        calculate_ear/calculate_head_pose/calculate_gaze from
+        features/face_metrics.py) instead of a hand-rolled pitch/EAR
+        formula -- this also fills in gaze_x/gaze_y, which the previous
+        version of this method left at 0.0 (encode_feature's default,
+        i.e. no gaze signal at all was ever extracted from EngageNet
+        images).
+        """
         try:
             import cv2
             frame = cv2.imread(str(img_path))
@@ -133,28 +146,9 @@ class EngageNetDataset(BaseBehaviorDataset):
         if not lms:
             return np.zeros(FEATURE_DIM, dtype=np.float32)
 
-        pts  = lms[0]
-        nose = pts[30]
-        chin = pts[8]
-        dy   = chin.y - nose.y
-        pitch_norm = float(np.clip(dy / 100.0, -1, 1))
+        return extract_feature_vector_from_landmarks(lms[0])
 
-        # EAR
-        def _ear(pts, indices):
-            p  = [pts[i] for i in indices]
-            v1 = np.hypot(p[1].x - p[5].x, p[1].y - p[5].y)
-            v2 = np.hypot(p[2].x - p[4].x, p[2].y - p[4].y)
-            h  = np.hypot(p[0].x - p[3].x, p[0].y - p[3].y)
-            return (v1 + v2) / (2.0 * h + 1e-6)
-
-        ear = (_ear(pts, range(36, 42)) + _ear(pts, range(42, 48))) / 2.0
-
-        return self.encode_feature(
-            pitch_norm=pitch_norm,
-            ear=float(np.clip(ear, 0, 1)),
-        )
-
-    def _iter_samples(self) -> Generator[tuple[np.ndarray, int], None, None]:
+    def _iter_samples(self) -> Generator[tuple[np.ndarray, int, object], None, None]:
         rows = self._load_rows()
         if self.max_images:
             rows = rows[: self.max_images]
@@ -171,10 +165,11 @@ class EngageNetDataset(BaseBehaviorDataset):
                 frame_features.append(feats)
                 frame_labels.append(_score_to_label(score))
 
-            windows, y = self.build_windows(
+            windows, y, groups = self.build_windows(
                 frame_features, frame_labels,
                 window_size=self.window_size,
                 stride=self.stride,
+                group_id=seq_start,
             )
             for i in range(len(y)):
-                yield windows[i], int(y[i])
+                yield windows[i], int(y[i]), groups[i]

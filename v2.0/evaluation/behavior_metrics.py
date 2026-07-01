@@ -51,8 +51,18 @@ class BehaviorEvaluator:
     def __init__(self) -> None:
         self._y_true: list[int] = []
         self._y_pred: list[int] = []
-        # For temporal consistency: consecutive prediction sequences per person
+        # Per-person PREDICTION sequences, in order.
         self._sequences: dict[str, list[int]] = defaultdict(list)
+        # Per-person GROUND-TRUTH sequences, in the same order -- needed to
+        # compute the real Temporal Consistency Coefficient (TCC), which
+        # must condition on whether ground truth actually changed between
+        # consecutive frames. Previously this evaluator only ever stored
+        # y_pred per person, so temporal "consistency" could not
+        # distinguish bad flicker (prediction changes when it shouldn't)
+        # from correctly following a real transition (prediction changes
+        # because the true label did) -- it was structurally incapable of
+        # measuring that distinction.
+        self._true_sequences: dict[str, list[int]] = defaultdict(list)
 
     # ── accumulation ─────────────────────────────────────────────────────────
 
@@ -77,11 +87,51 @@ class BehaviorEvaluator:
 
         if person_id is not None:
             self._sequences[person_id].extend(list(y_pred))
+            self._true_sequences[person_id].extend(list(y_true))
 
     def reset(self) -> None:
         self._y_true.clear()
         self._y_pred.clear()
         self._sequences.clear()
+        self._true_sequences.clear()
+
+    def temporal_consistency(self) -> float:
+        """
+        Temporal Consistency Coefficient (TCC):
+
+            TCC = (1 / |S|) * sum_{t in S} 1[pred_t == pred_{t-1}]
+
+        where S is the set of consecutive-frame transitions, RESTRICTED to
+        those where the ground truth did NOT change (y_true_t ==
+        y_true_{t-1}). This is the key design choice: conditioning on
+        ground-truth stability is what distinguishes bad flicker (the
+        model's prediction changes even though the true behavior didn't)
+        from correctly following a real transition (the true behavior
+        changed, so the prediction changing too is CORRECT, not
+        inconsistency) -- an unconditioned "did consecutive predictions
+        match" metric cannot tell these apart and penalizes a model for
+        correctly tracking real, rapid behavior changes.
+
+        Averaged across all tracked persons/sequences. Returns 1.0 if no
+        person-tracked sequences with at least 2 frames exist (vacuously
+        consistent -- there's nothing to be inconsistent about).
+        """
+        total_stable_transitions = 0
+        total_matches = 0
+
+        for person_id, preds in self._sequences.items():
+            trues = self._true_sequences.get(person_id, [])
+            if len(preds) != len(trues) or len(preds) < 2:
+                continue
+            for t in range(1, len(preds)):
+                if trues[t] == trues[t - 1]:  # ground truth did not change
+                    total_stable_transitions += 1
+                    if preds[t] == preds[t - 1]:
+                        total_matches += 1
+
+        if total_stable_transitions == 0:
+            return 1.0
+        return total_matches / total_stable_transitions
 
     # ── computation ──────────────────────────────────────────────────────────
 
@@ -125,7 +175,7 @@ class BehaviorEvaluator:
             f1s.append(f1)
 
         f1_macro = float(np.mean(f1s))
-        tc       = _temporal_consistency(self._sequences)
+        tc       = self.temporal_consistency()
 
         result = {
             "accuracy":             round(accuracy,  4),
@@ -181,23 +231,3 @@ def _confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, n: int) -> np.ndar
     for t, p in zip(y_true, y_pred):
         cm[t, p] += 1
     return cm
-
-
-def _temporal_consistency(sequences: dict[str, list[int]], window: int = 50) -> float:
-    """
-    Fraction of consecutive same-label windows inside each *stable* 10-second
-    (≈50-frame) block. Returns 1.0 if no sequences available.
-    """
-    if not sequences:
-        return 1.0
-
-    scores: list[float] = []
-    for seq in sequences.values():
-        if len(seq) < window:
-            continue
-        for start in range(0, len(seq) - window + 1, window):
-            chunk = seq[start: start + window]
-            mode  = max(set(chunk), key=chunk.count)
-            scores.append(chunk.count(mode) / window)
-
-    return float(np.mean(scores)) if scores else 1.0

@@ -28,31 +28,42 @@ logger = logging.getLogger("cognen.train")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from training.model import BehaviorClassifierCNN, NUM_CLASSES
 from training.datasets.base_dataset import FEATURE_DIM, WINDOW_SIZE, BEHAVIOR_CLASSES
 
-# Class index shortcuts for ConfusionPenaltyLoss
-_PHONE   = 2   # using_phone
-_READING = 1   # attentive_reading
-_ABSENT  = 5   # absent
-_SCREEN  = 0   # attentive_screen
+# NUM_CLASSES/BehaviorClassifierCNN come from training.model, which imports
+# torch at module level -- keep that import lazy (only inside train(), which
+# actually needs torch) so _load_all_samples/_train_val_split/data-loading
+# logic stays testable without torch installed. NUM_CLASSES itself is just
+# len(BEHAVIOR_CLASSES), so define it locally instead of importing it.
+NUM_CLASSES = len(BEHAVIOR_CLASSES)
 
 
 # ── Dataset helpers ───────────────────────────────────────────────────────────
 
-def _load_all_samples(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
-    """Collect all (window, label) pairs from configured datasets."""
-    from training.datasets.base_dataset import BaseBehaviorDataset
-
+def _load_all_samples(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Collect all (window, label, group_id) triples from configured datasets."""
     all_windows: list[np.ndarray] = []
     all_labels:  list[int]        = []
+    all_groups:  list[object]     = []
+
+    # Running counter for the "no natural grouping" fallback (e.g. the
+    # random-synthetic smoke-test path below): each such window gets its
+    # own unique group so it can freely land on either side of a
+    # GroupShuffleSplit, rather than colliding under a shared `None` group
+    # (which would make ALL of them the same group and could silently pin
+    # every one of them onto only one side of the split).
+    _ungrouped_counter = [0]
 
     def _consume(dataset):
         logger.info("Loading %s …", type(dataset).__name__)
         n = 0
-        for window, label in dataset:
+        for window, label, group_id in dataset:
             all_windows.append(window)
             all_labels.append(label)
+            if group_id is None:
+                group_id = f"_ungrouped_{_ungrouped_counter[0]}"
+                _ungrouped_counter[0] += 1
+            all_groups.append(group_id)
             n += 1
         logger.info("  → %d windows", n)
 
@@ -85,9 +96,7 @@ def _load_all_samples(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]
                 seed=42,
             )
             logger.info("  %s: %d windows  dist=%s", split, len(ds), ds.class_distribution())
-            for window, label in ds:
-                all_windows.append(window)
-                all_labels.append(label)
+            _consume(ds)
 
     if not all_windows:
         logger.warning("No dataset paths provided. Using random synthetic data (smoke-test only).")
@@ -95,22 +104,43 @@ def _load_all_samples(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]
         all_windows = [rng.random((WINDOW_SIZE, FEATURE_DIM)).astype(np.float32)
                        for _ in range(1000)]
         all_labels  = [random.randint(0, NUM_CLASSES - 1) for _ in range(1000)]
+        all_groups  = [f"_ungrouped_{i}" for i in range(1000)]
 
     X = np.stack(all_windows)   # (N, W, F)
     y = np.array(all_labels, dtype=np.int64)
-    return X, y
+    groups = np.array(all_groups, dtype=object)
+    return X, y, groups
 
 
 def _train_val_split(
     X: np.ndarray,
     y: np.ndarray,
+    groups: np.ndarray,
     val_ratio: float = 0.15,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    rng  = np.random.default_rng(seed)
-    idx  = rng.permutation(len(X))
-    n_val = max(1, int(len(X) * val_ratio))
-    val_idx, train_idx = idx[:n_val], idx[n_val:]
+    """
+    Split by GROUP (clip/subject), not by window. A naive random permutation
+    over pooled windows lets overlapping sliding windows from the same
+    clip/subject leak across train/val (DAiSEE/EngageNet windows are drawn
+    with stride < window_size, so adjacent windows share most of their
+    frames) -- this is a real train/val leakage bug the previous
+    implementation had.
+    """
+    from sklearn.model_selection import GroupShuffleSplit
+
+    n_groups = len(set(groups.tolist()))
+    if n_groups < 2:
+        # Degenerate case (e.g. a single-group smoke test) -- fall back to
+        # a plain random split rather than letting GroupShuffleSplit error.
+        rng = np.random.default_rng(seed)
+        idx = rng.permutation(len(X))
+        n_val = max(1, int(len(X) * val_ratio))
+        val_idx, train_idx = idx[:n_val], idx[n_val:]
+        return X[train_idx], y[train_idx], X[val_idx], y[val_idx]
+
+    splitter = GroupShuffleSplit(n_splits=1, test_size=val_ratio, random_state=seed)
+    train_idx, val_idx = next(splitter.split(X, y, groups=groups))
     return X[train_idx], y[train_idx], X[val_idx], y[val_idx]
 
 
@@ -133,11 +163,11 @@ class ConfusionPenaltyLoss:
     """
     CrossEntropyLoss with pair-specific penalty multipliers.
 
-    Asymmetrically penalises the most costly class confusions
-    identified in experiment_report.md §3.1:
-        phone → read  : 3.0×   (high safety cost — hidden phone use)
-        read  → phone : 2.5×   (moderate — student unfairly penalised)
-        absent → screen: 2.0×  (safety-critical — absent student missed)
+    Asymmetrically penalises the most costly class confusions. The full
+    6x6 matrix (all 30 off-diagonal pairs, each with a documented
+    rationale) lives in training/penalty_matrix.py -- previously only 3 of
+    30 pairs were specified here, with the remaining 27 silently
+    defaulting to 1.0x (plain cross-entropy).
     """
 
     PENALTY: "np.ndarray | None" = None
@@ -145,12 +175,9 @@ class ConfusionPenaltyLoss:
     @classmethod
     def _get_penalty(cls) -> "torch.Tensor":
         import torch
+        from training.penalty_matrix import build_penalty_matrix
         if cls.PENALTY is None:
-            P = np.ones((NUM_CLASSES, NUM_CLASSES), dtype=np.float32)
-            P[_PHONE,   _READING] = 3.0
-            P[_READING, _PHONE]   = 2.5
-            P[_ABSENT,  _SCREEN]  = 2.0
-            cls.PENALTY = P
+            cls.PENALTY = build_penalty_matrix()
         return torch.from_numpy(cls.PENALTY)
 
     @classmethod
@@ -185,16 +212,17 @@ def _compute_class_weights(y: np.ndarray) -> "torch.Tensor":
 def train(args: argparse.Namespace) -> None:
     import torch
     import torch.nn as nn
+    from training.model import BehaviorClassifierCNN
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Training on device: %s", device)
 
     # ── Data ──
-    X, y = _load_all_samples(args)
+    X, y, groups = _load_all_samples(args)
     logger.info("Total samples: %d  |  classes: %s",
                 len(X), np.bincount(y, minlength=NUM_CLASSES))
 
-    X_tr, y_tr, X_val, y_val = _train_val_split(X, y, val_ratio=args.val_ratio)
+    X_tr, y_tr, X_val, y_val = _train_val_split(X, y, groups, val_ratio=args.val_ratio)
 
     # ── Model ──
     model  = BehaviorClassifierCNN().to(device)
