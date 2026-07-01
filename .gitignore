@@ -1,6 +1,6 @@
 .next/
+*.claude/
 .claude/
-
 .env/
 .env.*
 
