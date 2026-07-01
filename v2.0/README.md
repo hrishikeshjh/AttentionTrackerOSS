@@ -28,6 +28,10 @@
 19. [Datasets](#19-datasets)
 20. [Privacy](#20-privacy)
 21. [Cross-Reference: v1.0](#21-cross-reference-v10)
+22. [Cross-Modal Contradiction Vector (Novel)](#22-cross-modal-contradiction-vector-novel)
+23. [Training Pipeline Correctness Fixes](#23-training-pipeline-correctness-fixes)
+24. [Server Hardening](#24-server-hardening)
+25. [Code Quality, Testing & CI](#25-code-quality-testing--ci)
 
 ---
 
@@ -273,14 +277,18 @@ python3 v2.0/training/train_classifier.py \
 
 ### 7.2 ConfusionPenaltyLoss
 
-Asymmetric loss penalizing costly confusions:
+Asymmetric loss penalizing costly confusions. **Updated**: previously only 3 of the 30 off-diagonal class pairs were specified (the rest silently defaulted to 1.0×); the complete matrix now lives in `training/penalty_matrix.py`, with every pair documented and a test (`tests/test_penalty_matrix.py`) asserting full coverage and that the matrix is intentionally asymmetric (not a copy-paste placeholder):
 
 | True → Predicted | Penalty | Rationale |
 |------------------|---------|-----------|
-| phone → reading | 3.0× | Hidden phone use (safety) |
-| reading → phone | 2.5× | Student unfairly penalized |
-| absent → screen | 2.0× | Absent student missed |
-| All other pairs | 1.0× | Standard |
+| `attentive_reading` → `using_phone` | 3.0× | Highest cost — false-accuses a reading student of phone use (the core motivating case) |
+| `using_phone` → `attentive_reading` / `attentive_screen` | 2.5× | Missed real phone use |
+| `attentive_screen` → `using_phone`, `distracted` → `using_phone` | 2.0× | False-accusation of phone use |
+| `absent` ↔ any present state | 1.8–2.0× | Attendance-critical — missed absence or falsely-marked absence |
+| `drowsy` confusions with any other class | 1.3–1.5× | Degree-of-attention error, not a false accusation |
+| `attentive_screen` ↔ `attentive_reading`, and either ↔ `distracted` | 1.2–1.3× | Lowest cost — student still clearly present |
+
+These weights are a design proposal derived from pedagogical-cost reasoning, not fit to labeled data (no real dataset exists yet to fit them empirically) — see `training/penalty_matrix.py`'s per-pair rationale comments for the full reasoning, and review/tune with domain stakeholders once real evaluation data exists.
 
 ### 7.3 Training Details
 
@@ -404,24 +412,30 @@ v2.0/
 │   ├── byte_tracker.py          # ByteTrack wrapper (boxmot)
 │   └── seat_mapper.py           # Seat zone assignment (Shapely)
 ├── features/
-│   └── face_metrics.py          # Python port of v1.0 face-geometry.ts
+│   ├── face_metrics.py          # Python port of v1.0 face-geometry.ts / scoring/
+│   └── feature_vector.py        # Canonical 13-dim feature encoder (see §23)
 ├── inference/
 │   ├── behavior_classifier.py   # Temporal 1D-CNN + context-gate
+│   ├── contradiction_detector.py # Cross-Modal Contradiction Vector (see §22)
 │   └── room_analyzer.py         # Main orchestrator
 ├── training/
 │   ├── model.py                 # BehaviorClassifierCNN (20,550 params)
-│   ├── train_classifier.py      # Training CLI
+│   ├── train_classifier.py      # Training CLI (GroupShuffleSplit, see §23)
+│   ├── penalty_matrix.py        # Complete 6×6 ConfusionPenaltyLoss matrix (see §23)
 │   ├── export_onnx.py           # ONNX export + verification
-│   ├── feature_extractor.py     # 13-dim feature vector
+│   ├── feature_extractor.py     # Thin shim over features/feature_vector.py
 │   └── datasets/
-│       ├── base_dataset.py
-│       ├── realistic_synthetic_loader.py
+│       ├── base_dataset.py      # build_windows() now tracks group_id (see §23)
+│       ├── realistic_synthetic_loader.py  # _ClassSpec is now a typed dataclass
 │       ├── daisee_loader.py
 │       ├── engagenet_loader.py
-│       └── classroom_loader.py
+│       ├── classroom_loader.py
+│       ├── annotation_tools/
+│       │   └── cvat_to_classroom_json.py  # CVAT XML → ClassroomDataset format converter
+│       └── CALIBRATION.md       # Template for validating synthetic vs. real distributions
 ├── evaluation/
-│   ├── evaluate.py              # Full evaluation runner
-│   ├── behavior_metrics.py      # Accuracy, F1, temporal consistency
+│   ├── evaluate.py              # Full evaluation runner (no longer fabricates results — see §23)
+│   ├── behavior_metrics.py      # Accuracy, F1, real Temporal Consistency Coefficient (see §23)
 │   ├── tracking_metrics.py      # MOTA, IDF1, ID switches
 │   ├── occupancy_metrics.py     # Occupancy accuracy, absence latency
 │   ├── latency_benchmark.py     # P95 latency
@@ -429,9 +443,11 @@ v2.0/
 ├── models/
 │   ├── behavior_classifier_v2.onnx
 │   └── download_models.py
+├── dashboard/static/            # Required by server/main.py's StaticFiles mount
 ├── data/seat_maps/
 │   └── room_default.json
-├── tests/                       # 61 pytest tests
+├── tests/                       # pytest — see §25 for the lightweight-tier test list
+├── pyproject.toml               # ruff + mypy config (see §25)
 ├── run_analyzer.py              # CLI entry point
 ├── yolov8m-pose.pt
 └── yolov8s.pt
@@ -447,11 +463,15 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r server/requirements.txt
 
 # GPU (NVIDIA Linux/Windows only):
-# pip install onnxruntime-gpu>=1.18.0
+# pip install onnxruntime-gpu==1.18.0
 
 # Download YOLO weights
 python3 models/download_models.py
 ```
+
+> `server/requirements.txt` is pinned with `==` (not `>=`) for reproducible installs — each version is the one this code was actually written/tested against; unpinned ranges previously let a fresh install silently pull in an untested newer release. Every pin is verified to exist on PyPI. To upgrade a dependency: bump its pin, run the full test suite, then commit the bump on its own.
+
+For a lightweight dev setup that only needs `pytest tests/` (excludes YOLO/torch/opencv-dependent tests), see §25.
 
 ---
 
@@ -478,35 +498,47 @@ python3 run_analyzer.py --source camera --print-json | jq '.room_attention'
 
 ## 16. REST API Reference
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/rooms/{room_id}/start` | Start analysis (SourceConfig body) |
-| `POST` | `/rooms/{room_id}/stop` | Stop analysis |
-| `GET` | `/rooms/{room_id}/snapshot` | Latest analytics JSON |
-| `GET` | `/rooms` | List all rooms |
-| `WS` | `/ws/room/{room_id}` | Real-time push @ 5 Hz |
+| Method | Path | Description | Error responses |
+|--------|------|-------------|------------------|
+| `POST` | `/rooms/{room_id}/start` | Start analysis (SourceConfig body) | `422` invalid `room_id` or source config; `429` if `MAX_CONCURRENT_ROOMS` reached; `500` if model weights are missing |
+| `POST` | `/rooms/{room_id}/stop` | Stop analysis | `404` room not found (previously returned `200` with an `{"error": ...}` body) |
+| `GET` | `/rooms/{room_id}/snapshot` | Latest analytics JSON | `404` room not found |
+| `GET` | `/rooms` | List all rooms | — |
+| `WS` | `/ws/room/{room_id}` | Real-time push @ 5 Hz | Closes with code `1008` (policy violation) for an invalid/not-found `room_id`, `1011` (internal error) on an unexpected server-side failure |
 
-Environment variables: `COGNEN_PROCESS_EVERY_N`, `COGNEN_RTSP_TRANSPORT`, `COGNEN_CAMERA_BUFFER`, `API_HOST`, `API_PORT`
+`room_id` must match `^[a-zA-Z0-9_-]+$` — see [§24](#24-server-hardening) for why.
+
+Environment variables: `COGNEN_PROCESS_EVERY_N`, `COGNEN_RTSP_TRANSPORT`, `COGNEN_CAMERA_BUFFER`, `COGNEN_MAX_CONCURRENT_ROOMS` (default 20), `API_HOST`, `API_PORT`
 
 ---
 
 ## 17. Testing & Evaluation
 
 ```bash
-# All 61 tests
+# Full test suite (needs the full requirements.txt: torch, opencv, ultralytics, shapely, etc.)
 python3 -m pytest tests/ -v
+
+# Lightweight tier only (numpy + pytest + scikit-learn — no GPU/ML deps needed;
+# this is what CI runs, see §25): feature encoding, penalty matrix, temporal
+# consistency, train/val split, CVAT conversion, v1-pipeline logic, behavior rules
+python3 -m pytest tests/ --ignore=tests/test_tracking.py --ignore=tests/test_v2_pipeline.py -v
 
 # Evaluation against ARCHITECTURE.md targets
 python3 v2.0/evaluation/evaluate.py \
     --model v2.0/models/behavior_classifier_v2.onnx \
+    --classroom /path/to/classroom/dataset \
     --seat_map v2.0/data/seat_maps/room_default.json
 ```
+
+> **Updated**: `evaluate.py` previously fabricated numeric results (`pred = label if rng.random() > 0.2 else random_class`) when no `--classroom` dataset path was supplied — this has been fixed. Running `evaluate.py` without a real dataset now reports `"status": "SKIPPED"` for each section instead of a synthesized score. See §18's banner for the current, honest state of the numbers below.
 
 ---
 
 ## 18. Performance Metrics
 
-Trained on 42,600 synthetic windows (AR(1) temporal autocorrelation). Tested on 3,000 independent windows.
+> ⚠ **These are targets, not measured results** — see [README-overall.md §7](../README-overall.md#7-performance-metrics) for the full, current honesty banner. The table below was trained/tested entirely on the same synthetic AR(1) generator (train seed=42, test seed=43) — a circular evaluation, not a generalization test — which is why every score reads a suspiciously perfect **1.000**. No real, subject-disjoint test set has been evaluated yet. `evaluate.py`'s fabrication bug (see §17) has been fixed, but that only means it now correctly reports `SKIPPED` instead of a fake number — it does not mean these numbers are real.
+
+Trained on 42,600 synthetic windows (AR(1) temporal autocorrelation). Tested on 3,000 independent windows drawn from the *same* synthetic distribution.
 
 | Metric | Score | Target | ✓ |
 |--------|-------|--------|---|
@@ -570,3 +602,50 @@ v2.0 reuses v1.0's per-person analysis pipeline. See [v1.0 README](../v1.0/READM
 | Seat mapping | N/A | Shapely polygons |
 | Posture analysis | N/A | YOLOv8-pose keypoints |
 | Deployment | Browser + Chrome Ext | FastAPI + GPU |
+
+---
+
+## 22. Cross-Modal Contradiction Vector (Novel)
+
+Additive to the already-documented Context-Gate Override (§8): that mechanism is a rule that fires on *one* known confusion (phone vs. reading) and discards the disagreement magnitude once applied. The **Cross-Modal Contradiction Vector (CMCV)**, ported identically from v1.0 (see [v1.0 README §21](../v1.0/README.md#21-cross-modal-contradiction-vector-novel) for the full spec), is a general, symmetric, per-frame disagreement statistic over all modality pairs (gaze, posture-stability, ocular/PERCLOS, object-context, hand-action).
+
+**Implementation**: `inference/contradiction_detector.py`, called from `RoomAnalyzer._analyze_person()` alongside the behavior classifier — computed per tracked person, using the same `metrics`, `person_objs`, and `hand_proximity` already assembled there, and exposed as `contradiction_index`/`contradiction_category` sibling fields on the per-person result dict (never folded into `attention_score`). Cross-verified against the TypeScript implementation to produce matching categorizations (`fatigue_masking`, `prop_without_engagement`, `context_conflict`, `coherent`) on identical inputs.
+
+**Integration point**: feeds the currently-empty `v2.0/dashboard/` and `v2.0/analytics/` stub packages — a natural, currently-unused home for a "flag high-contradiction students for teacher review" view.
+
+**Validation status**: same caveat as v1.0 — computationally free and unit-tested against constructed cases, but full empirical validation needs human-annotated modality-conflict labels that don't exist in DAiSEE/EngageNet yet.
+
+---
+
+## 23. Training Pipeline Correctness Fixes
+
+A pass through the training/eval pipeline surfaced and fixed several real bugs, independent of the "make the benchmark numbers real" effort (§18):
+
+- **Feature-encoding mismatch (live train/inference bug)**: `training/feature_extractor.py` normalized gaze/pitch/yaw to `[0,1]`, while `realistic_synthetic_loader.py` (the synthetic generator actually used for training) and `inference/behavior_classifier.py::_extract` (the actual inference-time consumer) both use `[-1,1]`. A model trained partly on `[0,1]`-encoded windows and partly on `[-1,1]`-encoded windows would learn a broken, inconsistent decision boundary. Fixed by consolidating all feature extraction into one canonical `features/feature_vector.py`, standardized on `[-1,1]`, imported by `feature_extractor.py` and all three real-data loaders (`daisee_loader.py`, `engagenet_loader.py`, `classroom_loader.py`) — which previously each hand-reimplemented their own crude EAR/pitch/gaze math instead of calling `features/face_metrics.py`'s corrected functions. This also filled in `gaze_x`/`gaze_y` for `engagenet_loader.py` and `classroom_loader.py`, which previously never computed gaze at all (defaulted to 0.0, i.e. no gaze signal).
+- **Train/val leakage**: `train_classifier.py::_train_val_split` previously split pooled sliding-window samples via a naive random permutation — for DAiSEE/EngageNet, overlapping windows from the same clip/subject (stride < window_size) could land on both sides of the split. Fixed by threading a `group_id` (clip_id, or `f"{clip_id}_{track_id}"` for classroom data) through `base_dataset.py::build_windows()` and every loader's `_iter_samples()`, and switching to `sklearn.model_selection.GroupShuffleSplit`. Verified with a regression test (`tests/test_train_val_split.py`) asserting no group_id appears on both sides of a split.
+- **Complete ConfusionPenaltyLoss matrix**: see §7.2.
+- **Real Temporal Consistency Coefficient**: `BehaviorEvaluator` previously only stored per-person *prediction* sequences (never ground truth), so its "temporal consistency" metric was a mode-agreement score over raw prediction blocks — structurally incapable of distinguishing bad flicker (prediction changes when the true behavior didn't) from correctly following a real transition (prediction changes because ground truth did too). Fixed: `BehaviorEvaluator.temporal_consistency()` now tracks both sequences and computes `TCC = (matching consecutive predictions) / (transitions where ground truth did NOT change)` — conditioning on ground-truth stability is the key fix. See `evaluation/behavior_metrics.py` and `tests/test_temporal_consistency.py`.
+- **`_ClassSpec` dataclass conversion**: `realistic_synthetic_loader.py`'s per-class distribution spec was a `__slots__` + `**kwargs`/`setattr` class that mypy couldn't verify attribute existence/types through — converted to a `@dataclass(slots=True)` with explicit typed fields (same call sites, same memory layout, now statically verifiable). This alone resolved 20 of the first mypy pass's 55 findings.
+- **Dataset scaffolding**: `training/datasets/annotation_tools/cvat_to_classroom_json.py` converts a CVAT-for-video-1.1 XML export into `ClassroomDataset`'s expected annotation format — nothing previously produced that format, so the classroom loader was unusable without hand-authoring JSON. Validated end-to-end against a hand-built fixture XML and the real `ClassroomDataset` loader (`tests/test_cvat_to_classroom_json.py`). `training/datasets/CALIBRATION.md` is a template for validating the synthetic generator's class-conditional constants against real extracted distributions once real footage exists — currently unfilled, since no real footage has been run through the pipeline yet.
+
+---
+
+## 24. Server Hardening
+
+- **Path-traversal / injection fix**: `server/config.py::load_seat_map()` built a filesystem path directly from an unvalidated `room_id` path parameter (`SEAT_MAPS_DIR / f"{room_id}.json"`). Fixed by validating `room_id` against `^[a-zA-Z0-9_-]+$` (`ROOM_ID_PATTERN`) both at the FastAPI layer (`server/main.py::_validate_room_id`, `422` response) and defense-in-depth inside `load_seat_map()` itself (`ValueError`) — verified with a live `TestClient` that command-injection-style room_ids (`room;rm -rf`, `room$(whoami)`) are correctly rejected.
+- **Model-loading error handling**: `PersonDetector`/`ObjectDetector`/`PoseEstimator` previously called `YOLO(str(MODEL_PATH))` with no existence check — a missing `.pt` file surfaced as an opaque stack trace deep inside `ultralytics`. `server/config.py::require_model_file()` now validates existence first, raising a clear `FileNotFoundError` pointing at `models/download_models.py`; `server/main.py::start_room` catches this and returns `HTTPException(500, ...)` with the actionable message instead of crashing.
+- **HTTP status codes**: `stop_room`/`snapshot` previously returned `{"error": "Room not found"}` with an implicit `200 OK` — now `404`. See §16.
+- **WebSocket robustness**: `room_websocket` previously had no exception handling around snapshot serialization — an exception there crashed the streaming task silently with no client-visible error. Now wraps serialization per-tick (logs and skips a bad tick rather than dying) and closes with an explicit code (`1008` policy violation for an invalid/missing room, `1011` internal error on an unexpected failure) instead of hanging.
+- **Concurrent-room rate limit**: `/rooms/{room_id}/start` could previously spawn unbounded `asyncio.create_task()` calls. Now capped at `COGNEN_MAX_CONCURRENT_ROOMS` (default 20, env-configurable) — the `(N+1)`th concurrent room-start request gets `429`. No new dependency (a simple in-process counter, not `slowapi`).
+- **`dashboard/static` directory**: `server/main.py` mounts `StaticFiles(directory=.../dashboard/static)` at import time — this directory didn't exist anywhere in the repo, meaning the server would have crashed on startup before ever handling a request. Created (with a `.gitkeep`) so the mount succeeds; found and fixed incidentally while writing a `TestClient`-based verification for the fixes above.
+
+---
+
+## 25. Code Quality, Testing & CI
+
+- **Linting**: `ruff check .` via `pyproject.toml` (`select = ["E", "F", "I"]` — pyflakes + pycodestyle errors + import sorting; a lenient first pass, not a full rewrite). `ruff format --check` is deliberately **not** enforced — this codebase uses intentional visual alignment in tabular data structures (e.g. `training/penalty_matrix.py`, `realistic_synthetic_loader.py`'s `_SPECS` table) that Black-style auto-formatting would destroy.
+- **Type checking**: `mypy .` via `pyproject.toml` (`disallow_untyped_defs = false` — non-strict, since much of the codebase predates any type-checker; catches real errors in code that does have annotations without demanding annotations everywhere). First pass found 55 issues; genuine bugs and one real code-quality fix (see §23's `_ClassSpec` conversion) brought it to 26 remaining, individually verified to be benign pre-existing patterns (mostly "declare as `None`, lazily assign a real object" across 3+ loader files, and a couple of dict-value-type inference limits) rather than actual defects. CI runs `mypy .` as **informational, not a merge gate** (`continue-on-error: true`) given this backlog — new code should still aim to be mypy-clean.
+- **Test suite**: see §17 for the lightweight-vs-full test tier split. Mypy's first pass also caught a real regression: `evaluation/evaluate.py` still unpacked `ClassroomDataset` iteration as a 2-tuple after the train/val-leakage fix (§23) changed every loader to yield 3-tuples `(window, label, group_id)` — would have crashed the moment real classroom evaluation ran. Fixed.
+- **Dependency pinning**: see §14.
+- **`pip-audit`**: runs against `server/requirements.txt` in CI.
+- **CI**: `.github/workflows/ci.yml` (shared file with v1.0, path-filtered) runs `ruff check`, `mypy` (informational), the lightweight pytest tier, and `pip-audit` on every push/PR to `main`. See [README-overall.md](../README-overall.md) for the full pipeline description.

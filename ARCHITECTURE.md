@@ -16,6 +16,7 @@
 7. [Evaluation Metrics](#7-evaluation-metrics)
 8. [Implementation Folder Structure](#8-folder-structure)
 9. [End-to-End Inference Pipeline](#9-inference-pipeline)
+10. [Post-Upgrade: Correctness, Security & CI (Status Update)](#10-post-upgrade-status)
 
 ---
 
@@ -45,17 +46,20 @@ Webcam (640×480 @ 5 FPS)
 | Metrics aggregator | `face-geometry.ts` `FaceMetricsAggregator` | L502-592 | 🔄 Extend | 🔄 Extend per-person |
 | ML Engine | `ml-engine.ts` `MLEngine` | L235-395 | 🔄 Redesign scoring | 🔄 Redesign scoring |
 | Feature weights | `ml-engine.ts` FEATURE_WEIGHTS | L19-42 | 🔄 Add object/posture weights | 🔄 Add object/posture weights |
+| **Scoring core (post-upgrade)** | `src/lib/scoring/` (new, see §10) | — | ✅ Single source of truth | ✅ Ported to `features/face_metrics.py`, kept in sync via golden-fixture contract |
 | Session analytics | `analytics.ts` `SessionAnalyticsEngine` | L225-369 | ✅ Reuse | 🔄 Per-person analytics |
 | Genkit AI flow | `analyze-facial-features.ts` | 51 lines | ❌ Remove (latency) | ❌ Remove |
 | Chrome extension | `ml-core.js`, `offscreen.js`, etc. | ~1500 lines | ✅ Keep | N/A (server-based) |
 
-### Key Limitations of v1.0
+### Key Limitations of v1.0 (status update: 1–4 addressed by the v1.0 upgrade below; 5 fixed separately)
 
-1. **No object detection** — cannot distinguish book vs phone vs screen
-2. **Looking down = distracted** — pitch penalty is uniform; reading a book is penalized
-3. **No body/hand tracking** — misses posture and hand-object interactions
-4. **Single-frame decisions** — EMA smoothing only; no true temporal modeling
-5. **Single person only** — `detections[0]` hardcoded everywhere
+1. **No object detection** — cannot distinguish book vs phone vs screen. **Addressed**: YOLOv8-nano object detection is implemented (§2.1).
+2. **Looking down = distracted** — pitch penalty is uniform; reading a book is penalized. **Addressed**: context-aware pitch scoring is implemented (§2.2), though the underlying head-pose formula itself had a separate correctness bug (see "Shared Scoring Core" note below) that has also since been fixed.
+3. **No body/hand tracking** — misses posture and hand-object interactions. **Addressed**: MediaPipe Hands + `HandObjectProximityDetector` implemented (§2.4).
+4. **Single-frame decisions** — EMA smoothing only; no true temporal modeling. **Partially addressed**: a rule-based 15-frame sliding-window classifier exists (§2.3); the trained 1D-CNN version described in README-overall.md is not yet backed by a real trained model (see README-overall.md §7's honesty banner).
+5. **Single person only** — `detections[0]` hardcoded everywhere. **Fixed** (independent of the v1.0 upgrade path below): replaced with `PrimaryFaceSelector` in `v1.0/src/lib/scoring/face-selection.ts` — locks onto the largest, most-centered face with identity-continuity hysteresis. See "Shared Scoring Core & Correctness Fixes" note below.
+
+> **Shared Scoring Core & Correctness Fixes (post-upgrade)**: beyond the upgrade path described in this section, a later pass found and fixed real bugs in the *existing* math this document describes as "reuse directly": the head-pose formula (§5.4 in both READMEs) used nose-chin distance to normalize pitch, which foreshortens as the head pitches and biased pitch against itself — now both yaw and pitch share the same normalizer (interocular distance). The web app, Chrome extension, and v2.0's Python port had also independently drifted to different thresholds/weights/formulas for the same signals; `v1.0/src/lib/scoring/` is now the single source of truth (see [v1.0 README §20](v1.0/README.md#20-shared-scoring-core--cross-language-consistency) for the full account, including a real bug this uncovered in v2.0: it never computed gaze at all).
 
 ---
 
@@ -761,3 +765,47 @@ CCTV Stream (1280×720 @ 15 FPS)
 | Room dashboard | N/A | ✨ New |
 | Chrome extension | ✅ Keep + update | N/A |
 | Genkit AI flow | ❌ Remove | ❌ Remove |
+
+---
+
+## 10. Post-Upgrade: Correctness, Security & CI (Status Update)
+
+Everything above this section describes the original design analysis and upgrade plan. This section records what was actually built and fixed in subsequent passes, without removing or superseding the design rationale above — treat this as the current-state addendum.
+
+### 10.1 Shared Scoring Core (v1.0 + v2.0)
+
+The design above (§1's "Reuse Map") assumed `face-geometry.ts`/`ml-engine.ts` could simply be "reused directly" or "ported" as-is. In practice, three independent copies of this math (web app, Chrome extension, v2.0 Python port) drifted to different thresholds, weights, and formulas for the same signals — e.g. attention thresholds 70/40 (web) vs 80/50 (extension), gaze multiplier 2× vs 3×, and a head-pose pitch formula that normalized by nose-chin distance (which foreshortens as the head pitches, biasing pitch against itself) instead of the more stable interocular distance.
+
+**Fix**: `v1.0/src/lib/scoring/` is now the single source of truth for all face-geometry math. `face-geometry.ts`/`ml-engine.ts` are re-export shims over it (existing imports unchanged). The Chrome extension's plain-JS `ml-core.js` has its formulas hand-synced to match (documented in its header comment — an automated build step is a scoped future improvement). `v2.0/features/face_metrics.py` is kept in sync via a documented golden-fixture equivalence contract rather than code-generation. Porting this fix surfaced a real, previously-undocumented bug: **v2.0 never computed gaze at all** — `room_analyzer.py` hardcoded `gaze_x=None, gaze_y=None`, silently defaulting to "looking dead center" downstream.
+
+Also added: `v1.0/src/lib/scoring/face-selection.ts`'s `PrimaryFaceSelector`, replacing the `detections[0]` hardcoding flagged as Limitation 5 above — locks onto the largest, most-centered face with identity-continuity hysteresis (v2.0 doesn't need this; ByteTrack already provides persistent per-person track IDs).
+
+Full account: [v1.0 README §20](v1.0/README.md#20-shared-scoring-core--cross-language-consistency).
+
+### 10.2 Cross-Modal Contradiction Vector (New Novel Contribution)
+
+Beyond the novel algorithms already claimed in [README-overall.md](README-overall.md#novel-algorithmic-contributions) (Context-Gate Override, Asymmetric ConfusionPenaltyLoss, AR(1) Temporal Fusion, Prioritized Seat Mapping, Fatigue Onset Detection), a new additive contribution was designed and implemented: the **Cross-Modal Contradiction Vector (CMCV)**. Where the Context-Gate Override is a rule that fires on one known confusion (phone vs. reading) and discards the disagreement magnitude, CMCV is a general, symmetric, per-frame disagreement statistic over all modality pairs, retained as a first-class signal (not folded back into the attention score) and classified into an actionable taxonomy (`fatigue_masking`, `prop_without_engagement`, `context_conflict`, `coherent`).
+
+Implemented identically in both `v1.0/src/lib/contradiction-detector.ts` and `v2.0/inference/contradiction_detector.py`, cross-verified to produce matching categorizations on identical inputs. Computationally free (reuses already-computed sub-scores, zero new model inference) and unit-tested against constructed cases; full empirical validation is gated on labeled modality-conflict data that doesn't yet exist (see [v1.0 README §21](v1.0/README.md#21-cross-modal-contradiction-vector-novel) for the complete spec, integration points, and honest validation-status assessment).
+
+### 10.3 Research-Integrity Fix: Real Training/Evaluation Pipeline
+
+README-overall.md's headline benchmark numbers (86.5% accuracy, F1 0.852, a 55,100-sequence dataset) were not backed by any real training run. Worse, `v2.0/evaluation/evaluate.py` was found to **actively fabricate results** — synthesizing predictions (`pred = label if rng.random() > 0.2 else random_class`) whenever no real dataset path was supplied — and the one real training run that did exist was evaluated circularly (trained and tested on the same synthetic AR(1) generator). This has been addressed in two parts:
+
+1. **Fabrication removed**: `evaluate.py` now reports `"status": "SKIPPED"` instead of a synthesized score when no real dataset is available.
+2. **Pure-code training-pipeline bugs fixed** (no external dataset access needed): a live train/inference feature-encoding mismatch (`[0,1]` vs `[-1,1]` for gaze/pitch/yaw across different modules), a train/val leakage bug (naive random split instead of grouping by clip/subject), an incomplete ConfusionPenaltyLoss matrix (3 of 30 pairs specified), and a Temporal Consistency Coefficient that could not actually distinguish flicker from real transitions (it never tracked ground truth, only predictions). All fixed with regression tests. Full details: [v2.0 README §23](v2.0/README.md#23-training-pipeline-correctness-fixes).
+
+**Still blocked** on external access (unchanged from before this pass): acquiring real DAiSEE/EngageNet data, recording/licensing classroom footage, and running real ablations against a genuine held-out test set. README-overall.md's numbers remain explicitly labeled as targets, not measured results, until that work happens.
+
+### 10.4 Security Hardening (v2.0 Server)
+
+A hardening pass on `v2.0/server/` fixed: a path-traversal/injection vector in `room_id` handling (unvalidated path parameter flowing into a filesystem path — now validated against `^[a-zA-Z0-9_-]+$` at both the API layer and defense-in-depth inside `config.py`), unhandled model-loading crashes (missing `.pt`/`.onnx` files previously surfaced as opaque stack traces — now a clear `FileNotFoundError` pointing at `download_models.py`), incorrect HTTP status codes (`404` cases were returning `200` with an error body), missing WebSocket exception handling (an unhandled exception could crash the streaming task silently), and unbounded concurrent-room creation (now capped via `COGNEN_MAX_CONCURRENT_ROOMS`, default 20). Full details: [v2.0 README §24](v2.0/README.md#24-server-hardening).
+
+### 10.5 Dependency & Code-Quality Hygiene
+
+- **v1.0**: `npm audit` findings reduced from 107 (6 critical, 22 high) to 35 (0 critical, 0 high) via `npm audit fix`, targeted version bumps, and `package.json` overrides. Redundant `yarn.lock` (causing GitHub to double-scan the same dependency tree) removed. ESLint config added (none existed before — `next.config.ts` was also silently swallowing type/lint errors at build time via `ignoreBuildErrors`/`ignoreDuringBuilds`, both now removed). React error boundaries (`error.tsx`, `global-error.tsx`) added. Chrome extension `host_permissions` narrowed (removed an unnecessary `<all_urls>` grant). Firebase config moved from hardcoded values to env vars (not a secret fix — Firebase Web SDK keys are meant to be public — but closes a real inconsistency where `next.config.ts` declared env vars nothing populated). Full details: [v1.0 README §22–23](v1.0/README.md#22-testing-linting--ci).
+- **v2.0**: `ruff`/`mypy` config added (none existed before). First mypy pass found 55 issues; fixing them surfaced one genuine regression (`evaluate.py` still unpacking a 2-tuple after a loader interface change elsewhere had moved to 3-tuples) and one worthwhile structural fix (`_ClassSpec` converted from an unverifiable `**kwargs`/`setattr` pattern to a typed dataclass, resolving 20 findings at once); 26 pre-existing, individually-verified-benign findings remain and are surfaced as an informational (non-blocking) CI check rather than forced through a larger speculative rewrite. `requirements.txt` pinned with `==` (every pin verified to exist on PyPI). Full details: [v2.0 README §25](v2.0/README.md#25-code-quality-testing--ci).
+
+### 10.6 Continuous Integration
+
+`.github/workflows/ci.yml` (one file, shared by both sub-projects, path-filtered so a v1.0-only change doesn't trigger v2.0 jobs and vice versa) runs on every push/PR to `main`: for v1.0 — typecheck, lint, test, build, `npm audit --audit-level=high`; for v2.0 — `ruff check`, `mypy` (informational), the lightweight pytest tier, `pip-audit`; repo-wide — secret scanning (`gitleaks`). A single `all-checks-passed` job aggregates every job's result (treating skipped jobs as passing) so branch protection only needs to reference one required check.

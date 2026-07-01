@@ -26,7 +26,12 @@ A Chrome extension for real-time cognitive engagement tracking using facial anal
 - **Camera**: For facial landmark detection
 - **Storage**: To save session data and settings
 - **Notifications**: For attention and break reminders
-- **Active Tab**: To detect tab switching (multitasking)
+- **Active Tab**: To detect tab switching (multitasking), and to cover ad-hoc standalone-mode camera access on any page the user explicitly invokes the extension on
+- **Host permissions** (updated): scoped to `meet.google.com`, `*.zoom.us`, and `teams.microsoft.com` only — a previously-present `<all_urls>` entry was removed since it granted unnecessary access beyond what Meet-mode content-script injection actually needs. See the main [v1.0 README §23](../README.md#23-security--dependency-hygiene) for the full security/dependency hygiene pass this was part of.
+
+### Performance
+
+The offscreen-document detection loop is now throttled to a 200ms (5fps) budget instead of running unthrottled on every display-refresh tick (~60fps) — cutting CPU usage roughly 10× during active sessions, since only 5fps of data is ever consumed downstream anyway. Storage writes are fire-and-forget and debounced (only on a meaningful score change or a 500ms cap) rather than blocking the detection loop. See [v1.0 README §20 & §22](../README.md#20-shared-scoring-core--cross-language-consistency) for the shared scoring core and testing details.
 
 ## Usage
 
