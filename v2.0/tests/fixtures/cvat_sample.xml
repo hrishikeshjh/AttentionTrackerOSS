@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <task>
+      <name>clip_0001</name>
+      <size>3</size>
+    </task>
+  </meta>
+  <track id="0" label="student" source="manual">
+    <box frame="0" outside="0" occluded="0" keyframe="1" xtl="10.0" ytl="20.0" xbr="110.0" ybr="220.0" z_order="0">
+      <attribute name="behavior">attentive_screen</attribute>
+      <attribute name="seat_id">seat_1</attribute>
+    </box>
+    <box frame="1" outside="0" occluded="0" keyframe="0" xtl="12.0" ytl="21.0" xbr="112.0" ybr="221.0" z_order="0">
+      <attribute name="behavior">attentive_screen</attribute>
+      <attribute name="seat_id">seat_1</attribute>
+    </box>
+    <box frame="2" outside="0" occluded="0" keyframe="1" xtl="15.0" ytl="25.0" xbr="115.0" ybr="225.0" z_order="0">
+      <attribute name="behavior">using_phone</attribute>
+      <attribute name="seat_id">seat_1</attribute>
+    </box>
+  </track>
+  <track id="1" label="student" source="manual">
+    <box frame="0" outside="0" occluded="0" keyframe="1" xtl="300.0" ytl="40.0" xbr="400.0" ybr="240.0" z_order="0">
+      <attribute name="behavior">attentive_reading</attribute>
+      <attribute name="seat_id">seat_2</attribute>
+    </box>
+    <box frame="1" outside="0" occluded="0" keyframe="1" xtl="300.0" ytl="40.0" xbr="400.0" ybr="240.0" z_order="0">
+      <attribute name="behavior">attentive_reading</attribute>
+      <attribute name="seat_id">seat_2</attribute>
+    </box>
+  </track>
+</annotations>

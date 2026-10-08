@@ -1,0 +1,156 @@
+{
+  "timestamp": "2026-03-09T13:13:30",
+  "behavior": {
+    "accuracy": 0.808,
+    "f1_macro": 0.8079,
+    "per_class": {
+      "attentive_screen": {
+        "precision": 0.7901,
+        "recall": 0.8101,
+        "f1": 0.8,
+        "support": 79
+      },
+      "attentive_reading": {
+        "precision": 0.8333,
+        "recall": 0.7778,
+        "f1": 0.8046,
+        "support": 90
+      },
+      "using_phone": {
+        "precision": 0.7778,
+        "recall": 0.84,
+        "f1": 0.8077,
+        "support": 75
+      },
+      "distracted": {
+        "precision": 0.8452,
+        "recall": 0.7802,
+        "f1": 0.8114,
+        "support": 91
+      },
+      "drowsy": {
+        "precision": 0.7765,
+        "recall": 0.8462,
+        "f1": 0.8098,
+        "support": 78
+      },
+      "absent": {
+        "precision": 0.8235,
+        "recall": 0.8046,
+        "f1": 0.814,
+        "support": 87
+      }
+    },
+    "temporal_consistency": 1.0,
+    "n_samples": 500,
+    "confusion_matrix": [
+      [
+        64,
+        1,
+        3,
+        1,
+        7,
+        3
+      ],
+      [
+        2,
+        70,
+        6,
+        7,
+        4,
+        1
+      ],
+      [
+        3,
+        4,
+        63,
+        2,
+        0,
+        3
+      ],
+      [
+        3,
+        4,
+        3,
+        71,
+        6,
+        4
+      ],
+      [
+        3,
+        3,
+        1,
+        1,
+        66,
+        4
+      ],
+      [
+        6,
+        2,
+        5,
+        2,
+        2,
+        70
+      ]
+    ],
+    "targets_met": {
+      "accuracy": false,
+      "f1_macro": true,
+      "precision_using_phone": false,
+      "recall_attentive_reading": false,
+      "temporal_consistency": true
+    }
+  },
+  "tracking": {
+    "mota": 1.0,
+    "idf1": 1.0,
+    "id_switches": 0,
+    "id_switches_per_min": 0.0,
+    "total_fp": 0,
+    "total_fn": 0,
+    "gt_total": 785,
+    "n_frames": 300,
+    "targets_met": {
+      "mota": true,
+      "idf1": true,
+      "id_switches_per_min": true
+    }
+  },
+  "occupancy": {
+    "occupancy_accuracy": 0.9625,
+    "mean_absence_latency_s": 0.0,
+    "p95_absence_latency_s": 0.0,
+    "n_seat_frames": 6000,
+    "n_latency_events": 1763,
+    "targets_met": {
+      "occupancy_accuracy": true,
+      "absence_detection_latency_s": true
+    }
+  },
+  "latency": {
+    "name": "v2.0 inference (ONNX)",
+    "n_frames": 110,
+    "mean_ms": 0.02,
+    "median_ms": 0.02,
+    "p95_ms": 0.02,
+    "p99_ms": 0.04,
+    "max_ms": 0.09,
+    "min_ms": 0.01
+  },
+  "summary": {
+    "targets_met": {
+      "accuracy": false,
+      "f1_macro": true,
+      "precision_using_phone": false,
+      "recall_attentive_reading": false,
+      "temporal_consistency": true,
+      "mota": true,
+      "idf1": true,
+      "id_switches_per_min": true,
+      "occupancy_accuracy": true,
+      "absence_detection_latency_s": true,
+      "v2_latency": true
+    },
+    "score": "8/11"
+  }
+}
