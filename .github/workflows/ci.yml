@@ -153,6 +153,9 @@ jobs:
       #    scoring/constants.ts; fail if either generated file changed.
       # 3. reproduce the proposal's pitch diagnosis table (numpy only).
       - run: npx tsx ../shared/fixtures/gen_encode13_fixture.ts
+      # Same for the CMCV (contradiction detector) cross-language fixture that
+      # v2.0/tests/test_contradiction_detector.py asserts against.
+      - run: npx tsx ../shared/fixtures/gen_cmcv_fixture.ts
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
@@ -160,6 +163,9 @@ jobs:
           cache-dependency-path: .github/ci/requirements-pitch-sim.txt
       - run: pip install -r ../.github/ci/requirements-pitch-sim.txt
       - run: python ../docs/proposals/evidence/pitch_sim.py
+      # The 15-dim (13 + posture) feature-vector fixture is generated from
+      # v2.0/features/feature_vector.py (numpy only).
+      - run: python ../shared/fixtures/gen_encode15_fixture.py
       - name: Generated evidence/fixtures are up to date
         run: |
           # Modified tracked files...
@@ -221,13 +227,13 @@ jobs:
           cache: npm
           cache-dependency-path: v1.0/package-lock.json
       - run: npm ci --no-audit --no-fund
-      # Merge gate on CRITICAL advisories only. The remaining high/moderate
-      # findings are transitive (e.g. @grpc/grpc-js via firebase/genkit,
-      # extract-zip via genkit-cli) with no non-breaking upstream fix; they
-      # are printed here for review and handled by Dependabot / manual bumps.
-      # A new critical advisory turns this red without a code change: fix it
-      # (npm audit fix / bump) rather than lowering the gate.
-      - run: npm audit --audit-level=critical
+      # Merge gate on ANY known advisory (all severities): the dependency tree
+      # is currently clean (0 vulnerabilities after the Tailwind 4 migration
+      # removed `braces`, the extract-zip stub, and the OpenTelemetry 2
+      # overrides plus scripts/patch-genkit-otel2.mjs). A new advisory turns
+      # this red without a code change: fix it (npm audit fix / bump / override)
+      # rather than lowering the gate. `--audit-level=low` fails on low and up.
+      - run: npm audit --audit-level=low
 
   # ── v2.0 (Python / FastAPI) ───────────────────────────────────────────────────
   v2-lint:

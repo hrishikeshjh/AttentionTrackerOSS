@@ -26,3 +26,5 @@ DACE-IMPLEMENTATION-PLAN.md
 v1.0/public/mediapipe/wasm/
 v1.0/public/onnx/*.wasm
 v1.0/public/onnx/*.mjs
+
+node_modules/
