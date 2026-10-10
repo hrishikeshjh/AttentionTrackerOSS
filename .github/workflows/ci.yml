@@ -1,138 +1,201 @@
 name: CI
 
-# Runs on every push to main (as requested) and on PRs targeting main, so
-# problems are caught before merge, not just after. Jobs are path-filtered
-# (via the `changes` job below) so a v1.0-only change doesn't waste time
-# running v2.0 jobs and vice versa -- see the `changes` job's outputs and
-# each downstream job's `if:` condition.
+# Triggers:
+# - push to main and dev: main gets a result for every merged commit; dev is
+#   the integration branch, so breakage there is caught before the PR to main.
+# - pull_request into main or dev (dev also receives Dependabot PRs, see
+#   .github/dependabot.yml).
+# - workflow_dispatch: manual full run of EVERY job regardless of paths, e.g.
+#   `gh workflow run ci.yml --ref dev`.
+# Jobs are path-filtered by the `changes` job so a v1.0-only change doesn't run
+# v2.0 jobs and vice versa (except on workflow_dispatch, which runs all).
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
+  workflow_dispatch:
 
-# pull-requests: read is required on PR runs: dorny/paths-filter lists the PR's
-# changed files and gitleaks-action lists the PR's commits through the GitHub
-# API; without it both fail with "403 Resource not accessible by integration".
+# Least privilege: every job can only read the repo. The two jobs that call the
+# pull-requests API (`changes`: dorny/paths-filter lists the PR's files;
+# `secret-scan`: gitleaks-action lists the PR's commits) add
+# `pull-requests: read` themselves; without it they fail on PRs with
+# "403 Resource not accessible by integration".
 permissions:
   contents: read
-  pull-requests: read
 
+# One run per ref. Superseded runs are cancelled on PRs and dev, but never on
+# main, so every commit that lands on main keeps a complete result.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    # Explicit bash => `bash --noprofile --norc -eo pipefail {0}` (pipefail is
+    # not on with the implicit default shell).
+    shell: bash
+
+# Runner image is pinned rather than `ubuntu-latest`, which moves to Ubuntu 26
+# from 2026-10-19 (actions/runner-images#14748). Bump deliberately.
+#
+# Third-party and first-party actions are pinned to full commit SHAs (tag in
+# the trailing comment); Dependabot (.github/dependabot.yml) bumps both.
 
 jobs:
   # ── Path detection (drives which jobs below actually run) ──────────────────
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
-      v1: ${{ steps.filter.outputs.v1 }}
-      v2: ${{ steps.filter.outputs.v2 }}
+      # workflow_dispatch has no PR/push diff to filter on, so a manual run
+      # forces every job on.
+      v1: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.v1 == 'true' }}
+      v2: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.v2 == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      # Credentials are kept here (default persist-credentials): on push
+      # events paths-filter runs `git fetch` to find the base commit, which
+      # needs auth on a private repo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name != 'workflow_dispatch'
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        if: github.event_name != 'workflow_dispatch'
         id: filter
         with:
           filters: |
+            ci: &ci
+              # A CI change must exercise every job it can affect.
+              - '.github/workflows/**'
+              - '.github/ci/**'
             v1:
+              - *ci
               - 'v1.0/**'
               # DACE evidence + cross-language fixtures are generated from
               # v1.0 code and verified by the v1-test job below.
               - 'shared/**'
               - 'docs/proposals/evidence/**'
             v2:
+              - *ci
               - 'v2.0/**'
               # cross-language fixtures read by v2.0/tests (e.g. encode13 vs v1.0)
               - 'shared/**'
               - 'docs/proposals/evidence/**'
 
   # ── v1.0 (Next.js / TypeScript) ──────────────────────────────────────────────
+  # Node 24 = current Active LTS (Node 20 reached EOL in 2026-04); it is also
+  # the version the full v1.0 suite was verified with locally.
   v1-typecheck:
     needs: changes
     if: needs.changes.outputs.v1 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: v1.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
           cache: npm
           cache-dependency-path: v1.0/package-lock.json
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
 
   v1-lint:
     needs: changes
     if: needs.changes.outputs.v1 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: v1.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
           cache: npm
           cache-dependency-path: v1.0/package-lock.json
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npm run lint
 
   v1-test:
     needs: changes
     if: needs.changes.outputs.v1 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: v1.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
           cache: npm
           cache-dependency-path: v1.0/package-lock.json
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npx vitest run
       # DACE guards (no browser/camera needed):
       # 1. regenerate the cross-language encode13 fixture from the real v1.0
       #    code; v2.0 tests read it, so it must never drift from the source.
       # 2. the vitest run above regenerates legacy_pitch_constants.json from
       #    scoring/constants.ts; fail if either generated file changed.
-      - run: npx tsx ../shared/fixtures/gen_encode13_fixture.ts
-      - name: Generated evidence/fixtures are up to date
-        run: git diff --exit-code -- ../shared ../docs/proposals/evidence
       # 3. reproduce the proposal's pitch diagnosis table (numpy only).
-      - uses: actions/setup-python@v5
+      - run: npx tsx ../shared/fixtures/gen_encode13_fixture.ts
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - run: pip install numpy
+          cache: pip
+          cache-dependency-path: .github/ci/requirements-pitch-sim.txt
+      - run: pip install -r ../.github/ci/requirements-pitch-sim.txt
       - run: python ../docs/proposals/evidence/pitch_sim.py
+      - name: Generated evidence/fixtures are up to date
+        run: |
+          # Modified tracked files...
+          git diff --exit-code -- ../shared ../docs/proposals/evidence
+          # ...and new files a generator wrote but nobody committed.
+          untracked="$(git ls-files --others --exclude-standard -- ../shared ../docs/proposals/evidence)"
+          if [ -n "$untracked" ]; then
+            echo "::error::Untracked generated files; commit them:"
+            echo "$untracked"
+            exit 1
+          fi
 
   v1-build:
     needs: changes
     if: needs.changes.outputs.v1 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: v1.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
           cache: npm
           cache-dependency-path: v1.0/package-lock.json
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       # NEXT_PUBLIC_FIREBASE_* aren't secret (see src/lib/firebase.ts) --
       # dummy values here are enough for the build to succeed; real values
       # are only needed at runtime for actual Firebase calls to work.
       - run: npm run build
         env:
+          NEXT_TELEMETRY_DISABLED: "1"
           NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder
           NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci-placeholder.firebaseapp.com
           NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-placeholder
@@ -143,66 +206,78 @@ jobs:
   v1-audit:
     needs: changes
     if: needs.changes.outputs.v1 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: v1.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
           cache: npm
           cache-dependency-path: v1.0/package-lock.json
-      - run: npm ci
-      # Informational, not a merge gate: advisories are published daily, so a
-      # blocking audit turns red with no code change. Remaining findings are
-      # transitive (e.g. @grpc/grpc-js via firebase/genkit) with no upstream
-      # fix. Review the output; fix via `npm audit fix` / dependency bumps.
-      - run: npm audit --audit-level=high
-        continue-on-error: true
+      - run: npm ci --no-audit --no-fund
+      # Merge gate on CRITICAL advisories only. The remaining high/moderate
+      # findings are transitive (e.g. @grpc/grpc-js via firebase/genkit,
+      # extract-zip via genkit-cli) with no non-breaking upstream fix; they
+      # are printed here for review and handled by Dependabot / manual bumps.
+      # A new critical advisory turns this red without a code change: fix it
+      # (npm audit fix / bump) rather than lowering the gate.
+      - run: npm audit --audit-level=critical
 
   # ── v2.0 (Python / FastAPI) ───────────────────────────────────────────────────
   v2-lint:
     needs: changes
     if: needs.changes.outputs.v2 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: v2.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install ruff
+          cache-dependency-path: .github/ci/requirements-lint.txt
+      - run: pip install -r ../.github/ci/requirements-lint.txt
       # ruff format --check is deliberately NOT run here: this codebase
       # uses intentional visual alignment in tabular data structures
       # (e.g. training/penalty_matrix.py, realistic_synthetic_loader.py's
       # _SPECS table) that Black-style auto-formatting would destroy.
       # Linting (real bugs: unused imports, undefined names) is enforced;
       # formatting style is not.
-      - run: ruff check .
+      - run: ruff check --output-format=github .
 
   v2-typecheck:
     needs: changes
     if: needs.changes.outputs.v2 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: v2.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install mypy
+          cache-dependency-path: .github/ci/requirements-typecheck.txt
+      - run: pip install -r ../.github/ci/requirements-typecheck.txt
       # Informational, not a merge gate: this is the first mypy pass on a
-      # previously untyped-by-tool codebase. ~30 pre-existing findings
+      # previously untyped-by-tool codebase. ~38 pre-existing findings
       # remain (lazy-init "declare as None, assign real object later"
-      # patterns across 3+ files, and a couple of dict-value-type
+      # patterns across several files, and a couple of dict-value-type
       # inference limits) -- verified individually to be benign, not
       # bugs, during the pass that added this config. Fixing them requires
       # a structural refactor (e.g. Optional-typed lazy fields with
@@ -215,71 +290,118 @@ jobs:
   v2-test:
     needs: changes
     if: needs.changes.outputs.v2 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: v2.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
-      # Lightweight tier only: numpy/pytest/scikit-learn, no torch/opencv/
-      # ultralytics/mediapipe/shapely/fastapi. Installing the full ML stack
-      # (multi-GB, several minutes) for CI is a separate, heavier addition
-      # not in scope here -- test_tracking.py and test_v2_pipeline.py need
-      # it and are excluded; everything else (feature encoding, penalty
-      # matrix, temporal consistency, train/val split, CVAT conversion,
-      # v1 pipeline logic) runs on this lightweight tier.
+          cache-dependency-path: v2.0/server/requirements.txt
+      # Lightweight tier only: numpy/pytest/scikit-learn/onnxruntime, no
+      # torch/opencv/ultralytics/mediapipe/shapely/fastapi. Installing the
+      # full ML stack (multi-GB, several minutes) is a separate, heavier
+      # addition -- test_tracking.py and test_v2_pipeline.py need it and are
+      # excluded, and the torch-dependent cases in test_integration.py skip.
       # onnxruntime enables the ONNX contract checks in
       # tests/test_cross_language_contract.py (they skip without it).
-      - run: pip install numpy pytest scikit-learn onnxruntime
-      - run: pytest tests/ --ignore=tests/test_tracking.py --ignore=tests/test_v2_pipeline.py -v
+      #
+      # The light tier is installed at the SAME versions production pins in
+      # server/requirements.txt (used as a constraints file; extras such as
+      # uvicorn[standard] are stripped because pip rejects extras in
+      # constraints), so tests never run against an unpinned newer release.
+      - name: Install light test tier (constrained to production pins)
+        run: |
+          sed -E 's/\[[^]]*\]//' server/requirements.txt > "$RUNNER_TEMP/constraints.txt"
+          pip install -c "$RUNNER_TEMP/constraints.txt" numpy pytest scikit-learn onnxruntime
+      - run: pytest tests/ --ignore=tests/test_tracking.py --ignore=tests/test_v2_pipeline.py -v -rs
 
   v2-audit:
     needs: changes
     if: needs.changes.outputs.v2 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: v2.0
+    env:
+      # ── Flip switch ──────────────────────────────────────────────────────
+      # "true"  (current): pip-audit RESOLVES server/requirements.txt (full
+      #          transitive tree, Python 3.11 / linux x86_64) and the job is a
+      #          blocking merge gate. Verified 2026-10-10: the re-pinned file
+      #          resolves (`pip install --dry-run`) and `pip-audit -r` reports
+      #          no known vulnerabilities.
+      # "false": fallback if the pins ever stop resolving together (pip-audit
+      #          then aborts with ResolutionImpossible before auditing
+      #          anything): audit only the pins as written
+      #          (--no-deps --disable-pip), NOT transitives, and do not block.
+      #          Restore "true" as soon as resolution is fixed.
+      V2_AUDIT_RESOLVE: "true"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install pip-audit
-      # --no-deps --disable-pip audits the pinned versions as written instead
-      # of resolving them: server/requirements.txt is not currently
-      # resolvable (boxmot==10.0.43 pins numpy==1.23.1, conflicting with
-      # numpy==1.26.4), which made pip-audit abort before auditing anything.
-      # Informational, not a merge gate: the pins have known advisories
-      # (pillow, onnx, scikit-learn, pytest, python-dotenv); bumping them
-      # needs a smoke test of the ML stack, so it is tracked separately.
-      - run: pip-audit --no-deps --disable-pip -r server/requirements.txt
+          cache-dependency-path: .github/ci/requirements-audit.txt
+      - run: pip install -r ../.github/ci/requirements-audit.txt
+      - name: pip-audit (resolving, blocking)
+        if: env.V2_AUDIT_RESOLVE == 'true'
+        run: pip-audit --progress-spinner off -r server/requirements.txt
+      - name: pip-audit (pins only, informational fallback)
+        if: env.V2_AUDIT_RESOLVE != 'true'
         continue-on-error: true
+        run: pip-audit --progress-spinner off --no-deps --disable-pip -r server/requirements.txt
 
   # ── Repo-wide ─────────────────────────────────────────────────────────────
+  # gitleaks-action needs no GITLEAKS_LICENSE: the repo is owned by a personal
+  # account (a license is only required for organisation-owned repos; add
+  # `GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}` if it is ever moved to
+  # an org). Scope per event: push = the pushed commits, pull_request = the
+  # PR's commits, workflow_dispatch = the FULL history (hence fetch-depth: 0).
   secret-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Default ruleset + narrowly scoped allowlists for verified false
+          # positives (public Firebase web key, model SHA-256 checksums).
+          GITLEAKS_CONFIG: .github/gitleaks.toml
+          # Pinned: the action's built-in default (8.24.3) predates the
+          # [[allowlists]]/targetRules syntax used in the config above.
+          GITLEAKS_VERSION: 8.30.1
+          # PR review comments need pull-requests: write; findings are in the
+          # job summary and the SARIF artifact instead.
+          GITLEAKS_ENABLE_COMMENTS: "false"
 
   # ── Single required status check ─────────────────────────────────────────────
   # Point branch protection at this one job instead of listing every job
-  # above individually -- it passes iff every job that actually ran
-  # succeeded (skipped jobs, e.g. v1 jobs on a v2.0-only change, don't
-  # count as failures).
+  # above individually. It passes iff every needed job either succeeded or
+  # was skipped by the path filter; failure or cancellation of ANY job
+  # (including `changes`, whose failure would otherwise silently skip
+  # everything downstream) fails it. `always()` makes it run even when a
+  # dependency failed or the run was cancelled, so it never ends up
+  # "skipped" (which branch protection would treat as passing).
   all-checks-passed:
     if: always()
     needs:
+      - changes
       - v1-typecheck
       - v1-lint
       - v1-test
@@ -290,9 +412,13 @@ jobs:
       - v2-test
       - v2-audit
       - secret-scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - name: Verify no required job failed
+      - name: Verify no required job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo '${{ toJSON(needs) }}' | jq -e \
-            'to_entries | all(.value.result == "success" or .value.result == "skipped")'
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")' <<<"$NEEDS" >/dev/null

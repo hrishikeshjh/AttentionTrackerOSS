@@ -1,0 +1,4 @@
+# CI-only tool pin for the v2-lint job (.github/workflows/ci.yml).
+# Pinned so a new ruff release cannot turn CI red without a code change;
+# Dependabot (pip, /.github/ci) proposes bumps weekly.
+ruff==0.16.9

@@ -1,0 +1,4 @@
+# CI-only pin for the v1-test job's pitch diagnosis reproduction
+# (docs/proposals/evidence/pitch_sim.py needs numpy only). Kept equal to the
+# numpy pin in v2.0/server/requirements.txt.
+numpy==2.4.6

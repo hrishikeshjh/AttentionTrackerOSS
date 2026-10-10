@@ -1,35 +1,58 @@
 # Pinned with == rather than >= for reproducible installs (both in CI and
-# production) -- each version below is the minimum this code was actually
-# written/tested against; unpinned ">=" let a fresh install silently pull
-# in an untested newer release. To upgrade a dependency: bump its pin here,
-# run the full test suite (see v2.0/tests/) plus a manual smoke test of the
-# affected subsystem, then commit the bump on its own.
-fastapi==0.111.0
+# production). Unpinned ">=" lets a fresh install silently pull in an
+# untested newer release. To upgrade a dependency: bump its pin here,
+# re-check resolution (`pip install --dry-run -r server/requirements.txt`
+# on Python 3.11), run `pip-audit --no-deps --disable-pip -r
+# server/requirements.txt`, run the full test suite (see v2.0/tests/) plus
+# a manual smoke test of the affected subsystem, then commit the bump on its
+# own.
+#
+# 2026-10 security refresh (Dependabot pip alerts): torch, Pillow, onnx,
+# scikit-learn, pytest, python-dotenv and the transitive starlette were moved
+# to patched releases. The old set was not resolvable at all (boxmot 10.x pins
+# numpy==1.23.1/1.26.4 and torchvision<0.18, which caps torch at a vulnerable
+# 2.2.x), so the whole stack moved to numpy 2.x: boxmot 16, ultralytics 8.4,
+# mediapipe 0.10.31 (Tasks API only, no numpy<2 cap), opencv 4.13,
+# onnxruntime 1.24, shapely 2.1. Resolution verified for CPython 3.11 on
+# manylinux x86_64 (CI) and macOS arm64. Before relying on it, smoke-test the
+# heavy stack (YOLO load/inference, FaceLandmarker, ByteTrack, ONNX classifier)
+# on a real machine.
+
+# Web server. starlette is a transitive dependency of fastapi; it is pinned
+# explicitly because releases < 1.3.1 carry known advisories.
+fastapi==0.141.1
+starlette==1.6.0
 uvicorn[standard]==0.29.0
 websockets==12.0
+pydantic==2.13.5
+python-dotenv==1.2.2
+
 # Use opencv-python (not headless) so macOS/Windows permission dialogs work.
-# On headless servers you can swap to opencv-python-headless==4.9.0 instead.
-opencv-python==4.9.0.80
-ultralytics==8.2.0          # YOLOv8 (person, object, pose)
-torch==2.2.0
-torchvision==0.17.0
-numpy==1.26.4
+# On headless servers you can swap to opencv-python-headless==4.13.0.92 instead.
+opencv-python==4.13.0.92
+ultralytics==8.4.146        # YOLOv8 (person, object, pose); 8.2.x predates torch>=2.6 (weights_only torch.load default)
+torch==2.13.0
+torchvision==0.28.0         # matches torch 2.13
+numpy==2.4.6
 # ONNX Runtime — CPU build works on all platforms including Apple Silicon.
 # For NVIDIA GPU inference on Linux/Windows, replace with:
-#   pip install onnxruntime-gpu==1.18.0
-onnxruntime==1.18.0
-Pillow==10.3.0
-pydantic==2.7.0
-shapely==2.0.3              # polygon IoU for seat zones
-python-dotenv==1.0.1
+#   pip install onnxruntime-gpu==1.24.4
+onnxruntime==1.24.4
+Pillow==12.3.0
+shapely==2.1.2              # polygon IoU for seat zones
 
-# ByteTrack — install from source or use boxmot wrapper
-boxmot==10.0.43             # pip install boxmot (includes ByteTrack)
+# ByteTrack via boxmot (tracking/byte_tracker.py). 16.x exports ByteTrack at
+# the package root (10.x did not, so the stub tracker was always used);
+# 17.x-18.x do not export it either. boxmot 16 supports Python < 3.13 only.
+boxmot==16.0.11
 
 # Training & evaluation
-mediapipe==0.10.14          # FaceMesh (face landmark detection)
-scikit-learn==1.4.0         # metrics helpers
-onnx==1.16.0                # ONNX model verification
+# mediapipe 0.10.31: FaceLandmarker Tasks API (perception/face_landmarks.py);
+# no numpy<2 cap and, unlike 0.10.32+, no opencv-contrib-python dependency
+# (which would install a second, conflicting cv2 next to opencv-python).
+mediapipe==0.10.31
+scikit-learn==1.7.2         # metrics helpers
+onnx==1.22.0                # ONNX model verification
 
 # Testing
-pytest==8.2.0
+pytest==9.0.3

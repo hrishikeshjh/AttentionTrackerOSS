@@ -1,0 +1,123 @@
+# Dependabot version updates. Weekly, grouped, never auto-merged: every PR
+# goes through CI (.github/workflows/ci.yml) and a human review.
+#
+# - target-branch: dev -- version-update PRs land on the integration branch
+#   and reach main through the normal dev -> main PR. (Dependabot SECURITY
+#   updates ignore target-branch and always open against the default branch,
+#   main; the `*-security` groups below batch those.)
+# - cooldown: a release must be at least 14 days old before Dependabot
+#   proposes it (does not delay security updates).
+# - open-pull-requests-limit keeps the queue reviewable.
+version: 2
+
+updates:
+  # ── v1.0 web app + extension (npm) ─────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /v1.0
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps-v1)"
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      # One PR for all non-breaking bumps...
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+      # ...majors stay one PR per package (they need individual review).
+
+  # ── v2.0 server (pip) ───────────────────────────────────────────────────────
+  # server/requirements.txt pins the whole ML stack with ==; torch/torchvision,
+  # ultralytics, boxmot, numpy, onnx*, mediapipe, opencv must move together or
+  # the set stops resolving, so they share one group (all update types).
+  - package-ecosystem: pip
+    directory: /v2.0/server
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps-v2)"
+    groups:
+      pip-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      ml-stack:
+        applies-to: version-updates
+        patterns:
+          - "torch"
+          - "torchvision"
+          - "ultralytics"
+          - "boxmot"
+          - "numpy"
+          - "onnx"
+          - "onnxruntime*"
+          - "opencv-python*"
+          - "mediapipe"
+          - "shapely"
+          - "scikit-learn"
+          - "Pillow"
+      web-stack:
+        applies-to: version-updates
+        patterns:
+          - "fastapi"
+          - "starlette"
+          - "uvicorn*"
+          - "websockets"
+          - "pydantic*"
+          - "python-dotenv"
+      pip-other-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ── CI-only Python tool pins (ruff, mypy, pip-audit, numpy for pitch_sim) ──
+  - package-ecosystem: pip
+    directory: /.github/ci
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      ci-python-tools:
+        patterns: ["*"]
+
+  # ── GitHub Actions (SHA-pinned in ci.yml; Dependabot updates SHA + tag) ───
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -1,0 +1,3 @@
+# CI-only tool pin for the v2-typecheck job (.github/workflows/ci.yml).
+# Dependabot (pip, /.github/ci) proposes bumps weekly.
+mypy==2.3.1
