@@ -12,7 +12,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '../ui/button';
 import { Download, FileDown, Loader2 } from 'lucide-react';
 import { generateReportAction } from '@/app/actions';
-import { getAnalyticsEngine } from '@/lib/analytics';
+import { auth } from '@/lib/firebase';
+import { getAnalyticsEngine, type AnomalyResult } from '@/lib/analytics';
 import type { DaceStatus } from './webcam-panel';
 import type { LatencySummary } from '@/lib/dace/latency';
 import { downloadJsonl, type EvalLogger } from '@/lib/dace/eval-log';
@@ -61,6 +62,7 @@ export default function VisualsPanel({
   const { toast } = useToast();
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [analytics, setAnalytics] = useState<SessionAnalytics | null>(null);
+  const [anomalies, setAnomalies] = useState<AnomalyResult | null>(null);
 
   // Update analytics when session data changes
   useEffect(() => {
@@ -68,8 +70,10 @@ export default function VisualsPanel({
       const engine = getAnalyticsEngine();
       engine.setData(sessionData);
       setAnalytics(engine.analyze());
+      setAnomalies(engine.getAnomalies());
     } else {
       setAnalytics(null);
+      setAnomalies(null);
     }
   }, [sessionData]);
 
@@ -84,17 +88,23 @@ export default function VisualsPanel({
     }
     setIsGeneratingReport(true);
     try {
-      const result = await generateReportAction({
+      const user = auth.currentUser;
+      if (!user) throw new Error('Please sign in again to export a report.');
+      const idToken = await user.getIdToken();
+      const result = await generateReportAction(idToken, {
         averageAttention: summary.averageAttention,
         multitaskEvents: summary.multitaskEvents,
         engagementLevel: summary.engagementLevel,
         duration: summary.duration,
         ...(summary.unsureShare !== undefined
-          ? { unsureShare: summary.unsureShare, unsureReasons: reasonsText(summary.unsureReasons) }
+          ? { unsureShare: summary.unsureShare, unsureReasons: reasonsText(summary.unsureReasons)?.slice(0, 300) }
           : {}),
       });
 
-      if (result.success && result.data) {
+      if (!result.success) {
+        throw new Error(result.error || 'Unknown error');
+      }
+      if (result.data) {
         const link = document.createElement('a');
         link.href = result.data;
         link.download = `CognEn_Session_Report_${new Date().toISOString()}.pdf`;
@@ -106,7 +116,7 @@ export default function VisualsPanel({
           description: 'Your session summary PDF has been downloaded.',
         });
       } else {
-        throw new Error(result.error || 'Unknown error');
+        throw new Error('Empty report');
       }
     } catch (error: unknown) {
       console.error('Failed to generate report:', error);
@@ -128,6 +138,7 @@ export default function VisualsPanel({
         <MLInsightsCard
           prediction={prediction}
           analytics={analytics}
+          anomalies={anomalies}
           sessionActive={sessionActive}
         />
       </div>

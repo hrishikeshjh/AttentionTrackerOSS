@@ -8,6 +8,7 @@
     "genkit:watch": "genkit start -- tsx --watch src/ai/dev.ts",
     "build": "NODE_ENV=production next build",
     "start": "next start",
+    "postinstall": "node scripts/patch-genkit-otel2.mjs",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -64,14 +65,16 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "eslint": "^9.39.4",
     "eslint-config-next": "^15.5.27",
+    "extract-zip": "file:scripts/stubs/extract-zip",
     "genkit-cli": "^1.44.1",
     "postcss": "^8.5.29",
-    "tailwindcss": "^3.4.1",
+    "tailwindcss": "^4.3.3",
     "tsx": "4.23.13",
     "typescript": "^5",
     "vitest": "^4.1.11"
@@ -84,6 +87,26 @@
     "uuid": "^11.1.1",
     "adm-zip": "^0.6.1",
     "postcss": "$postcss",
-    "postcss-selector-parser": "^7.1.6"
+    "postcss-selector-parser": "^7.1.6",
+    "@opentelemetry/core": "^2.12.0",
+    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/sdk-trace-base": "^2.12.0",
+    "@opentelemetry/sdk-metrics": "^2.12.0",
+    "@opentelemetry/context-async-hooks": "^2.12.0",
+    "@opentelemetry/sdk-logs": "^0.223.0",
+    "@opentelemetry/api-logs": "^0.223.0",
+    "@opentelemetry/instrumentation": "^0.223.0",
+    "@opentelemetry/instrumentation-pino": "^0.69.0",
+    "@opentelemetry/instrumentation-winston": "^0.67.0",
+    "@google-cloud/opentelemetry-cloud-trace-exporter": "^3.1.0",
+    "@google-cloud/opentelemetry-cloud-monitoring-exporter": "^0.22.0",
+    "@google-cloud/opentelemetry-resource-util": "^3.1.0",
+    "extract-zip": "$extract-zip",
+    "@next/eslint-plugin-next": {
+      "fast-glob": "npm:tinyglobby@^0.2.17"
+    },
+    "@genkit-ai/tools-common": {
+      "chokidar": "^4.0.3"
+    }
   }
 }

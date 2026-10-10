@@ -18,6 +18,7 @@ import type { DaceEngine } from '@/lib/dace/engine';
 import type { EvalLogger } from '@/lib/dace/eval-log';
 import type { LatencySummary } from '@/lib/dace/latency';
 import { FixedTickScheduler } from '@/lib/dace/scheduler';
+import { AbsenceTracker, LEGACY_FRAME_INTERVAL_MS, withBehavior, withLegacyContext } from '@/lib/legacy-frame';
 
 /** DACE status for the dashboard (research badge, measurement label). */
 export type DaceStatus = {
@@ -76,7 +77,11 @@ export default function WebcamPanel({
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [isWebcamOn, setIsWebcamOn] = useState(false);
 
-  const animationFrameRef = useRef<number | null>(null);
+  // Legacy loop: one fixed-interval scheduler; the id guards against a tick
+  // that was in flight when the loop stopped/restarted delivering results.
+  const legacySchedulerRef = useRef<FixedTickScheduler | null>(null);
+  const legacyLoopIdRef = useRef(0);
+  const absenceRef = useRef<AbsenceTracker>(new AbsenceTracker());
   const metricsAggregatorRef = useRef<FaceMetricsAggregator>(new FaceMetricsAggregator());
   const lastDataPointTime = useRef<number>(0);
   const DATA_POINT_INTERVAL = 1000; // Record data point every 1 second
@@ -237,9 +242,13 @@ export default function WebcamPanel({
         ]);
 
         if (!cancelled) {
-          objectDetectorRef.current = od;
-          handTrackerRef.current = ht;
+          // Keep a module only if it actually loaded: a detector whose model
+          // failed to load used to be kept, so the upgraded weights always ran
+          // with empty context (legacy weights unreachable).
+          objectDetectorRef.current = od.isLoaded() ? od : null;
+          handTrackerRef.current = ht.isLoaded() ? ht : null;
           temporalClassifierRef.current = tbc;
+          if (!od.isLoaded()) console.info('[CognEn] Object model unavailable — legacy scoring weights in use.');
         }
       } catch (err) {
         console.warn('[CognEn] Context modules failed to load — running in legacy mode:', err);
@@ -264,10 +273,9 @@ export default function WebcamPanel({
   }, [sessionActive, onMultitask]);
 
   const stopAnalysis = useCallback(() => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
+    legacyLoopIdRef.current++; // invalidates any in-flight legacy tick
+    legacySchedulerRef.current?.stop();
+    legacySchedulerRef.current = null;
     schedulerRef.current?.stop();
     schedulerRef.current = null;
     if (canvasRef.current) {
@@ -313,113 +321,119 @@ export default function WebcamPanel({
     }
   }, [toast, modelsLoaded]);
 
-  // ── Legacy pipeline (DACE off): unchanged except that face-api calls go through the legacy provider ──
-  const runAnalysis = useCallback(async () => {
-    if (!modelsLoaded || !isWebcamOn || !videoRef.current || videoRef.current.readyState < 3) {
-      animationFrameRef.current = requestAnimationFrame(runAnalysis);
-      return;
-    }
-
-    if (!canvasRef.current || !videoRef.current) return;
-
+  // ── Legacy pipeline (DACE off) ──
+  // Fixed 200 ms ticks (LEGACY_FRAME_INTERVAL_MS) driven by one scheduler that
+  // skips a tick while the previous one is still running. The previous
+  // requestAnimationFrame loop was rescheduled from inside a useCallback that
+  // depended on sessionActive and the callbacks: when those changed, the
+  // cleanup cancelled only the latest rAF id while an in-flight async call
+  // (awaiting detection) rescheduled itself with its stale closure, leaving
+  // two or more loops running. The tick now reads everything through refs and
+  // drops its results if the loop was stopped or restarted meanwhile.
+  // The per-frame computations are unchanged.
+  const runLegacyTick = useCallback(async () => {
+    const loopId = legacyLoopIdRef.current;
     const video = videoRef.current;
-    canvasRef.current.width = video.videoWidth;
-    canvasRef.current.height = video.videoHeight;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 3 || !video.videoWidth) return;
+    const cb = callbacksRef.current;
+    const stale = () => loopId !== legacyLoopIdRef.current;
+
+    if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+    if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
     const displaySize = { width: video.videoWidth, height: video.videoHeight };
 
     try {
       const resizedDetections = await legacyProviderRef.current.detectResized(video, displaySize);
+      if (stale()) return;
 
-      const ctx = canvasRef.current.getContext('2d');
+      const ctx = canvas.getContext('2d');
       if (!ctx) return;
       ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
       // Lock onto a single primary face (largest + most centered, with
-      // identity-continuity hysteresis) instead of trusting detector order —
-      // detectAllFaces' array order is not a stable selection policy and can
-      // flip between candidates frame-to-frame when a second person or a
-      // photo/poster face enters frame.
+      // identity-continuity hysteresis) instead of trusting detector order.
       const primary = primaryFaceSelectorRef.current.select(
         resizedDetections.map((d) => ({ box: d.detection.box, detection: d })),
         displaySize.width,
         displaySize.height
       );
+      const timestamp = Date.now();
 
       if (primary) {
+        absenceRef.current.faceSeen();
         const landmarks = primary.detection.landmarks.positions;
-        legacyProviderRef.current.drawDetection(canvasRef.current, primary.detection);
+        legacyProviderRef.current.drawDetection(canvas, primary.detection);
 
-        const timestamp = Date.now();
-
-        // Run context detection in parallel with face metrics (non-blocking)
+        // Run context detection in parallel (non-blocking)
+        const objectDetector = objectDetectorRef.current;
         const [objectResult, handResult] = await Promise.allSettled([
-          objectDetectorRef.current?.detect(video) ?? Promise.resolve([]),
+          objectDetector?.detect(video) ?? Promise.resolve([]),
           handTrackerRef.current?.detect(video) ?? Promise.resolve([]),
         ]);
+        if (stale()) return;
 
         const detectedObjects = objectResult.status === 'fulfilled' ? objectResult.value : [];
-        const handResults    = handResult.status === 'fulfilled'   ? handResult.value  : [];
-
-        // Compute hand-object proximity
+        const handResults = handResult.status === 'fulfilled' ? handResult.value : [];
         const handObjectProximity = proximityDetectorRef.current.compute(handResults, detectedObjects);
 
-        // Build base face metrics
         const baseMetrics = metricsAggregatorRef.current.calculateExtendedMetrics(
           landmarks,
           video.videoWidth,
           video.videoHeight,
           timestamp
         );
-
-        // Build full ExtendedFaceMetrics with context fields
-        const extendedMetrics: ExtendedFaceMetrics = {
-          ...baseMetrics,
+        // detectedObjects only when the detector loaded (selects the weight set)
+        const extendedMetrics = withLegacyContext(baseMetrics, {
+          objectDetectorReady: objectDetector !== null,
           detectedObjects,
           handObjectProximity,
-        };
+        });
 
-        // Update temporal classifier once with complete metrics
-        if (temporalClassifierRef.current) {
-          extendedMetrics.behaviorResult = temporalClassifierRef.current.update({
-            metrics: extendedMetrics,
-            detectedObjects,
-            handProximity: handObjectProximity,
-          });
-        }
+        const behavior = temporalClassifierRef.current?.update({
+          metrics: extendedMetrics,
+          detectedObjects,
+          handProximity: handObjectProximity,
+        });
+        withBehavior(extendedMetrics, behavior);
 
-        onNewFaceMetrics(extendedMetrics);
+        cb.onNewFaceMetrics(extendedMetrics);
 
-        // Only record data points at intervals when session is active
-        if (sessionActive && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
+        if (sessionActiveRef.current && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
           lastDataPointTime.current = timestamp;
-
-          // Get ML prediction
-          const mlEngine = getMLEngine();
-          const prediction = mlEngine.predict(extendedMetrics);
-
-          if (process.env.NODE_ENV === 'development') {
-            debugPrediction(extendedMetrics, prediction);
-          }
-
-          onNewPrediction(prediction);
-
-          onNewDataPoint({
+          const prediction = getMLEngine().predict(extendedMetrics);
+          if (process.env.NODE_ENV === 'development') debugPrediction(extendedMetrics, prediction);
+          cb.onNewPrediction(prediction);
+          cb.onNewDataPoint({
             timestamp,
             attentionScore: prediction.rawScore,
             attentionState: prediction.attentionState,
           });
         }
       } else {
-        onNewFaceMetrics(null);
-        onNewPrediction(null);
+        // No face: feed the temporal window, and after ABSENCE_GRACE_MS score
+        // the absence (Idle, 0 through the EMA) so it lowers the session
+        // average instead of silently producing no data point.
+        temporalClassifierRef.current?.updateAbsent();
+        const absent = absenceRef.current.noFace(timestamp);
+        cb.onNewFaceMetrics(null);
+        if (absent && sessionActiveRef.current && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
+          lastDataPointTime.current = timestamp;
+          const prediction = getMLEngine().predictAbsent();
+          cb.onNewPrediction(prediction);
+          cb.onNewDataPoint({
+            timestamp,
+            attentionScore: prediction.rawScore,
+            attentionState: prediction.attentionState,
+          });
+        } else if (!absent) {
+          cb.onNewPrediction(null);
+        }
       }
     } catch (e) {
-      console.error("AI analysis failed", e);
+      console.error('AI analysis failed', e);
     }
-    if (isWebcamOn) {
-      animationFrameRef.current = requestAnimationFrame(runAnalysis);
-    }
-  }, [modelsLoaded, isWebcamOn, sessionActive, onNewDataPoint, onNewFaceMetrics, onNewPrediction]);
+  }, []);
 
   // ── DACE pipeline: fixed 200 ms ticks, no-face ticks fed to the window ──
   const runDaceTick = useCallback(async () => {
@@ -488,7 +502,13 @@ export default function WebcamPanel({
 
   useEffect(() => {
     if (isWebcamOn && modelsLoaded && mode === 'legacy') {
-      animationFrameRef.current = requestAnimationFrame(runAnalysis);
+      legacyLoopIdRef.current++;
+      const s = new FixedTickScheduler(runLegacyTick, {
+        intervalMs: LEGACY_FRAME_INTERVAL_MS,
+        onError: (e) => console.error('[CognEn] legacy tick failed', e),
+      });
+      legacySchedulerRef.current = s;
+      s.start();
     } else if (isWebcamOn && modelsLoaded && mode === 'dace' && daceEngineRef.current) {
       const s = new FixedTickScheduler(runDaceTick, {
         intervalMs: daceEngineRef.current.params.frameIntervalMs,
@@ -506,7 +526,7 @@ export default function WebcamPanel({
     return () => {
       stopAnalysis();
     };
-  }, [isWebcamOn, modelsLoaded, mode, runAnalysis, runDaceTick, stopAnalysis]);
+  }, [isWebcamOn, modelsLoaded, mode, runLegacyTick, runDaceTick, stopAnalysis]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -527,6 +547,7 @@ export default function WebcamPanel({
       resetMLEngine();
       metricsAggregatorRef.current = new FaceMetricsAggregator();
       temporalClassifierRef.current?.reset();
+      absenceRef.current.reset();
       lastDataPointTime.current = 0;
       if (mode === 'dace' && daceEngineRef.current) {
         // new session: re-estimate the pitch reference (5 s calibration) and start a fresh log

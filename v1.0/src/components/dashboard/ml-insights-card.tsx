@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import type { MLPrediction, SessionAnalytics } from '@/lib/types';
+import type { AnomalyResult } from '@/lib/analytics';
 import {
     Brain,
     TrendingUp,
@@ -29,6 +30,8 @@ const LABEL_TEXT: Record<string, string> = {
 interface MLInsightsCardProps {
     prediction: MLPrediction | null;
     analytics: SessionAnalytics | null;
+    /** sharp score drops / outliers (SessionAnalyticsEngine.getAnomalies) */
+    anomalies?: AnomalyResult | null;
     sessionActive: boolean;
 }
 
@@ -136,7 +139,7 @@ const InsightItem = ({
     );
 };
 
-export default function MLInsightsCard({ prediction, analytics, sessionActive }: MLInsightsCardProps) {
+export default function MLInsightsCard({ prediction, analytics, anomalies = null, sessionActive }: MLInsightsCardProps) {
     // Get top feature contributions
     const topFeatures = prediction
         ? Object.entries(prediction.featureContributions)
@@ -248,6 +251,14 @@ export default function MLInsightsCard({ prediction, analytics, sessionActive }:
                                         value={analytics.lowAttentionPeriods.length}
                                         variant={analytics.lowAttentionPeriods.length === 0 ? 'success' : analytics.lowAttentionPeriods.length < 3 ? 'warning' : 'danger'}
                                     />
+                                    {anomalies && (
+                                        <InsightItem
+                                            icon={TrendingDown}
+                                            label="Sharp Score Drops"
+                                            value={anomalies.scoreDropCount}
+                                            variant={anomalies.scoreDropCount === 0 ? 'success' : anomalies.scoreDropCount < 3 ? 'warning' : 'danger'}
+                                        />
+                                    )}
                                     {analytics.fatigueOnset && (
                                         <InsightItem
                                             icon={Timer}

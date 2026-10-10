@@ -1,0 +1,8 @@
+{
+  "name": "extract-zip",
+  "version": "0.0.0-cognen-unused",
+  "description": "Placeholder for the unused extract-zip dependency of genkit-cli (see index.js). Never published.",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "index.js"
+}
