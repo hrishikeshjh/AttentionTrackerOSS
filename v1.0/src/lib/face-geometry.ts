@@ -1,8 +1,8 @@
 /**
  * @deprecated import path — the actual implementation lives in
- * `./scoring/` (single source of truth, shared with the Chrome extension
- * bundle and kept in sync with v2.0's Python port via golden fixtures, see
- * scoring/EQUIVALENCE.md). This file is kept only so existing `@/lib/face-geometry`
+ * `./scoring/` (the web app's single source of truth; the Chrome extension
+ * and v2.0's Python port keep hand-maintained copies, see scoring/VERSION.ts).
+ * This file is kept only so existing `@/lib/face-geometry`
  * imports keep working; prefer importing from `@/lib/scoring` directly in new code.
  */
 export * from './scoring/geometry';

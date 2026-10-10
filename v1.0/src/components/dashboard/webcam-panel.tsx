@@ -6,13 +6,32 @@ import { Button } from '@/components/ui/button';
 import { Loader2, Play, StopCircle, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { SessionDataPoint, ExtendedFaceMetrics, MLPrediction } from '@/lib/types';
-import * as faceapi from 'face-api.js';
 import { FaceMetricsAggregator, HandObjectProximityDetector } from '@/lib/face-geometry';
 import { PrimaryFaceSelector } from '@/lib/scoring/face-selection';
 import { getMLEngine, resetMLEngine, debugPrediction } from '@/lib/ml-engine';
 import type { ObjectDetector } from '@/lib/object-detector';
 import type { HandTracker } from '@/lib/hand-tracker';
 import type { TemporalBehaviorClassifier } from '@/lib/temporal-classifier';
+import { LegacyFaceApiProvider } from '@/lib/dace/measurement/legacy-faceapi';
+import { resolveDaceConfig, type ResolvedDaceConfig } from '@/lib/dace/config';
+import type { DaceEngine } from '@/lib/dace/engine';
+import type { EvalLogger } from '@/lib/dace/eval-log';
+import type { LatencySummary } from '@/lib/dace/latency';
+import { FixedTickScheduler } from '@/lib/dace/scheduler';
+import { AbsenceTracker, LEGACY_FRAME_INTERVAL_MS, withBehavior, withLegacyContext } from '@/lib/legacy-frame';
+
+/** DACE status for the dashboard (research badge, measurement label). */
+export type DaceStatus = {
+  /** DACE engine is running (false: legacy pipeline, including after a fallback) */
+  active: boolean;
+  requested: boolean;
+  configHash: string;
+  version: string;
+  measurementLabel: string;
+  detectorAvailable: boolean;
+  fellBack: boolean;
+  warnings: string[];
+};
 
 interface WebcamPanelProps {
   sessionActive: boolean;
@@ -22,6 +41,22 @@ interface WebcamPanelProps {
   onNewFaceMetrics: (metrics: ExtendedFaceMetrics | null) => void;
   onNewPrediction: (prediction: MLPrediction | null) => void;
   onMultitask: () => void;
+  /** DACE only (optional; never called with DACE off) */
+  onDaceStatus?: (status: DaceStatus) => void;
+  onNewLatency?: (summary: LatencySummary) => void;
+  onEvalLog?: (logger: EvalLogger | null) => void;
+}
+
+type PipelineMode = 'pending' | 'legacy' | 'dace';
+
+function readResolvedConfig(): ResolvedDaceConfig {
+  let storage: Storage | null = null;
+  try {
+    storage = window.localStorage;
+  } catch {
+    storage = null;
+  }
+  return resolveDaceConfig({ search: window.location.search, storage });
 }
 
 export default function WebcamPanel({
@@ -32,6 +67,9 @@ export default function WebcamPanel({
   onNewFaceMetrics,
   onNewPrediction,
   onMultitask,
+  onDaceStatus,
+  onNewLatency,
+  onEvalLog,
 }: WebcamPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -39,7 +77,11 @@ export default function WebcamPanel({
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [isWebcamOn, setIsWebcamOn] = useState(false);
 
-  const animationFrameRef = useRef<number | null>(null);
+  // Legacy loop: one fixed-interval scheduler; the id guards against a tick
+  // that was in flight when the loop stopped/restarted delivering results.
+  const legacySchedulerRef = useRef<FixedTickScheduler | null>(null);
+  const legacyLoopIdRef = useRef(0);
+  const absenceRef = useRef<AbsenceTracker>(new AbsenceTracker());
   const metricsAggregatorRef = useRef<FaceMetricsAggregator>(new FaceMetricsAggregator());
   const lastDataPointTime = useRef<number>(0);
   const DATA_POINT_INTERVAL = 1000; // Record data point every 1 second
@@ -51,15 +93,45 @@ export default function WebcamPanel({
   const primaryFaceSelectorRef = useRef<PrimaryFaceSelector>(new PrimaryFaceSelector());
   const temporalClassifierRef = useRef<TemporalBehaviorClassifier | null>(null);
 
-  // Load face-api.js models
+  // Legacy measurement (face-api.js, loaded with a dynamic import)
+  const legacyProviderRef = useRef<LegacyFaceApiProvider>(new LegacyFaceApiProvider());
+
+  // DACE (only used when dace.enabled resolves to true)
+  const [mode, setMode] = useState<PipelineMode>('pending');
+  const daceConfigRef = useRef<ResolvedDaceConfig | null>(null);
+  const daceEngineRef = useRef<DaceEngine | null>(null);
+  const daceLoggerRef = useRef<EvalLogger | null>(null);
+  const schedulerRef = useRef<FixedTickScheduler | null>(null);
+  const [calibrating, setCalibrating] = useState(false);
+  const calibratingRef = useRef(false);
+  const sessionActiveRef = useRef(sessionActive);
+  const callbacksRef = useRef({ onNewDataPoint, onNewFaceMetrics, onNewPrediction, onNewLatency });
   useEffect(() => {
+    sessionActiveRef.current = sessionActive;
+  }, [sessionActive]);
+  useEffect(() => {
+    callbacksRef.current = { onNewDataPoint, onNewFaceMetrics, onNewPrediction, onNewLatency };
+  }, [onNewDataPoint, onNewFaceMetrics, onNewPrediction, onNewLatency]);
+
+  // Resolve the DACE config once (frozen for the page session). DACE off -> legacy, unchanged.
+  useEffect(() => {
+    try {
+      const resolved = readResolvedConfig();
+      daceConfigRef.current = resolved;
+      if (resolved.warnings.length) console.info('[CognEn DACE] config:', resolved.warnings);
+      setMode(resolved.config.enabled ? 'dace' : 'legacy');
+    } catch (err) {
+      console.warn('[CognEn DACE] config resolution failed — legacy pipeline:', err);
+      setMode('legacy');
+    }
+  }, []);
+
+  // Load face-api.js models (legacy pipeline)
+  useEffect(() => {
+    if (mode !== 'legacy') return;
     const loadModels = async () => {
-      const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model/';
       try {
-        await Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        ]);
+        await legacyProviderRef.current.loadModels();
         setModelsLoaded(true);
         toast({
           title: 'Model Loaded',
@@ -75,11 +147,78 @@ export default function WebcamPanel({
       }
     };
     loadModels();
-  }, [toast]);
+  }, [toast, mode]);
 
-  // Lazy-load context modules once face-api models are ready
+  // DACE: create the engine; MediaPipe/provider init failure -> automatic legacy fallback with a toast.
   useEffect(() => {
-    if (!modelsLoaded) return;
+    if (mode !== 'dace') return;
+    const resolved = daceConfigRef.current;
+    if (!resolved) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { createDaceEngine } = await import('@/lib/dace/engine-factory');
+        const { engine, logger, warnings } = await createDaceEngine(resolved, {
+          yoloSha256: process.env.NEXT_PUBLIC_DACE_YOLO_SHA256 || undefined,
+        });
+        if (cancelled) {
+          engine.dispose();
+          return;
+        }
+        daceEngineRef.current = engine;
+        daceLoggerRef.current = logger;
+        onEvalLog?.(logger);
+        onDaceStatus?.({
+          active: true,
+          requested: true,
+          configHash: resolved.hash,
+          version: resolved.version,
+          measurementLabel: engine.measurementLabel(),
+          detectorAvailable: engine.isDetectorAvailable(),
+          fellBack: false,
+          warnings,
+        });
+        if (warnings.length) console.info('[CognEn DACE] warnings:', warnings);
+        setModelsLoaded(true);
+        toast({ title: 'Model Loaded', description: `DACE research mode: ${engine.measurementLabel()}.` });
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[CognEn DACE] engine init failed — falling back to the legacy pipeline:', err);
+        onDaceStatus?.({
+          active: false,
+          requested: true,
+          configHash: resolved.hash,
+          version: resolved.version,
+          measurementLabel: 'face-api.js 68-pt (legacy fallback)',
+          detectorAvailable: false,
+          fellBack: true,
+          warnings: [err instanceof Error ? err.message : String(err)],
+        });
+        toast({
+          variant: 'destructive',
+          title: 'DACE unavailable',
+          description: 'MediaPipe could not start; using the standard analysis instead.',
+        });
+        setMode('legacy');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, toast, onDaceStatus, onEvalLog]);
+
+  // Dispose the DACE engine on unmount.
+  useEffect(() => {
+    return () => {
+      schedulerRef.current?.stop();
+      daceEngineRef.current?.dispose();
+      daceEngineRef.current = null;
+    };
+  }, []);
+
+  // Lazy-load context modules once face-api models are ready (legacy pipeline only)
+  useEffect(() => {
+    if (!modelsLoaded || mode !== 'legacy') return;
     let cancelled = false;
 
     const loadContextModules = async () => {
@@ -103,9 +242,13 @@ export default function WebcamPanel({
         ]);
 
         if (!cancelled) {
-          objectDetectorRef.current = od;
-          handTrackerRef.current = ht;
+          // Keep a module only if it actually loaded: a detector whose model
+          // failed to load used to be kept, so the upgraded weights always ran
+          // with empty context (legacy weights unreachable).
+          objectDetectorRef.current = od.isLoaded() ? od : null;
+          handTrackerRef.current = ht.isLoaded() ? ht : null;
           temporalClassifierRef.current = tbc;
+          if (!od.isLoaded()) console.info('[CognEn] Object model unavailable — legacy scoring weights in use.');
         }
       } catch (err) {
         console.warn('[CognEn] Context modules failed to load — running in legacy mode:', err);
@@ -114,7 +257,7 @@ export default function WebcamPanel({
 
     loadContextModules();
     return () => { cancelled = true; };
-  }, [modelsLoaded]);
+  }, [modelsLoaded, mode]);
 
   // Handle tab visibility for multitasking detection
   useEffect(() => {
@@ -130,10 +273,11 @@ export default function WebcamPanel({
   }, [sessionActive, onMultitask]);
 
   const stopAnalysis = useCallback(() => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
+    legacyLoopIdRef.current++; // invalidates any in-flight legacy tick
+    legacySchedulerRef.current?.stop();
+    legacySchedulerRef.current = null;
+    schedulerRef.current?.stop();
+    schedulerRef.current = null;
     if (canvasRef.current) {
       const ctx = canvasRef.current.getContext('2d');
       ctx?.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
@@ -177,124 +321,212 @@ export default function WebcamPanel({
     }
   }, [toast, modelsLoaded]);
 
-  const runAnalysis = useCallback(async () => {
-    if (!modelsLoaded || !isWebcamOn || !videoRef.current || videoRef.current.readyState < 3) {
-      animationFrameRef.current = requestAnimationFrame(runAnalysis);
-      return;
-    }
-
-    if (!canvasRef.current || !videoRef.current) return;
-
+  // ── Legacy pipeline (DACE off) ──
+  // Fixed 200 ms ticks (LEGACY_FRAME_INTERVAL_MS) driven by one scheduler that
+  // skips a tick while the previous one is still running. The previous
+  // requestAnimationFrame loop was rescheduled from inside a useCallback that
+  // depended on sessionActive and the callbacks: when those changed, the
+  // cleanup cancelled only the latest rAF id while an in-flight async call
+  // (awaiting detection) rescheduled itself with its stale closure, leaving
+  // two or more loops running. The tick now reads everything through refs and
+  // drops its results if the loop was stopped or restarted meanwhile.
+  // The per-frame computations are unchanged.
+  const runLegacyTick = useCallback(async () => {
+    const loopId = legacyLoopIdRef.current;
     const video = videoRef.current;
-    canvasRef.current.width = video.videoWidth;
-    canvasRef.current.height = video.videoHeight;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 3 || !video.videoWidth) return;
+    const cb = callbacksRef.current;
+    const stale = () => loopId !== legacyLoopIdRef.current;
+
+    if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+    if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
     const displaySize = { width: video.videoWidth, height: video.videoHeight };
 
     try {
-      const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
-      const resizedDetections = faceapi.resizeResults(detections, displaySize);
+      const resizedDetections = await legacyProviderRef.current.detectResized(video, displaySize);
+      if (stale()) return;
 
-      const ctx = canvasRef.current.getContext('2d');
+      const ctx = canvas.getContext('2d');
       if (!ctx) return;
       ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
       // Lock onto a single primary face (largest + most centered, with
-      // identity-continuity hysteresis) instead of trusting detector order —
-      // detectAllFaces' array order is not a stable selection policy and can
-      // flip between candidates frame-to-frame when a second person or a
-      // photo/poster face enters frame.
+      // identity-continuity hysteresis) instead of trusting detector order.
       const primary = primaryFaceSelectorRef.current.select(
         resizedDetections.map((d) => ({ box: d.detection.box, detection: d })),
         displaySize.width,
         displaySize.height
       );
+      const timestamp = Date.now();
 
       if (primary) {
+        absenceRef.current.faceSeen();
         const landmarks = primary.detection.landmarks.positions;
-        faceapi.draw.drawFaceLandmarks(canvasRef.current, [primary.detection]);
+        legacyProviderRef.current.drawDetection(canvas, primary.detection);
 
-        const timestamp = Date.now();
-
-        // Run context detection in parallel with face metrics (non-blocking)
+        // Run context detection in parallel (non-blocking)
+        const objectDetector = objectDetectorRef.current;
         const [objectResult, handResult] = await Promise.allSettled([
-          objectDetectorRef.current?.detect(video) ?? Promise.resolve([]),
+          objectDetector?.detect(video) ?? Promise.resolve([]),
           handTrackerRef.current?.detect(video) ?? Promise.resolve([]),
         ]);
+        if (stale()) return;
 
         const detectedObjects = objectResult.status === 'fulfilled' ? objectResult.value : [];
-        const handResults    = handResult.status === 'fulfilled'   ? handResult.value  : [];
-
-        // Compute hand-object proximity
+        const handResults = handResult.status === 'fulfilled' ? handResult.value : [];
         const handObjectProximity = proximityDetectorRef.current.compute(handResults, detectedObjects);
 
-        // Build base face metrics
         const baseMetrics = metricsAggregatorRef.current.calculateExtendedMetrics(
           landmarks,
           video.videoWidth,
           video.videoHeight,
           timestamp
         );
-
-        // Build full ExtendedFaceMetrics with context fields
-        const extendedMetrics: ExtendedFaceMetrics = {
-          ...baseMetrics,
+        // detectedObjects only when the detector loaded (selects the weight set)
+        const extendedMetrics = withLegacyContext(baseMetrics, {
+          objectDetectorReady: objectDetector !== null,
           detectedObjects,
           handObjectProximity,
-        };
+        });
 
-        // Update temporal classifier once with complete metrics
-        if (temporalClassifierRef.current) {
-          extendedMetrics.behaviorResult = temporalClassifierRef.current.update({
-            metrics: extendedMetrics,
-            detectedObjects,
-            handProximity: handObjectProximity,
-          });
-        }
+        const behavior = temporalClassifierRef.current?.update({
+          metrics: extendedMetrics,
+          detectedObjects,
+          handProximity: handObjectProximity,
+        });
+        withBehavior(extendedMetrics, behavior);
 
-        onNewFaceMetrics(extendedMetrics);
+        cb.onNewFaceMetrics(extendedMetrics);
 
-        // Only record data points at intervals when session is active
-        if (sessionActive && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
+        if (sessionActiveRef.current && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
           lastDataPointTime.current = timestamp;
-
-          // Get ML prediction
-          const mlEngine = getMLEngine();
-          const prediction = mlEngine.predict(extendedMetrics);
-
-          if (process.env.NODE_ENV === 'development') {
-            debugPrediction(extendedMetrics, prediction);
-          }
-
-          onNewPrediction(prediction);
-
-          onNewDataPoint({
+          const prediction = getMLEngine().predict(extendedMetrics);
+          if (process.env.NODE_ENV === 'development') debugPrediction(extendedMetrics, prediction);
+          cb.onNewPrediction(prediction);
+          cb.onNewDataPoint({
             timestamp,
             attentionScore: prediction.rawScore,
             attentionState: prediction.attentionState,
           });
         }
       } else {
-        onNewFaceMetrics(null);
-        onNewPrediction(null);
+        // No face: feed the temporal window, and after ABSENCE_GRACE_MS score
+        // the absence (Idle, 0 through the EMA) so it lowers the session
+        // average instead of silently producing no data point.
+        temporalClassifierRef.current?.updateAbsent();
+        const absent = absenceRef.current.noFace(timestamp);
+        cb.onNewFaceMetrics(null);
+        if (absent && sessionActiveRef.current && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
+          lastDataPointTime.current = timestamp;
+          const prediction = getMLEngine().predictAbsent();
+          cb.onNewPrediction(prediction);
+          cb.onNewDataPoint({
+            timestamp,
+            attentionScore: prediction.rawScore,
+            attentionState: prediction.attentionState,
+          });
+        } else if (!absent) {
+          cb.onNewPrediction(null);
+        }
       }
     } catch (e) {
-      console.error("AI analysis failed", e);
+      console.error('AI analysis failed', e);
     }
-    if (isWebcamOn) {
-      animationFrameRef.current = requestAnimationFrame(runAnalysis);
+  }, []);
+
+  // ── DACE pipeline: fixed 200 ms ticks, no-face ticks fed to the window ──
+  const runDaceTick = useCallback(async () => {
+    const engine = daceEngineRef.current;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!engine || !video || !canvas || video.readyState < 2 || !video.videoWidth) return;
+    const cb = callbacksRef.current;
+    const logger = daceLoggerRef.current;
+
+    if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+    if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+    const timestamp = Date.now();
+
+    const r = await engine.processFrame({ image: video, width: video.videoWidth, height: video.videoHeight, t: timestamp });
+
+    const ctx = canvas.getContext('2d');
+    ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    if (r.face) engine.drawFace(canvas, r.face);
+
+    const isCal = r.calibrating && r.face !== null;
+    if (isCal !== calibratingRef.current) {
+      calibratingRef.current = isCal;
+      setCalibrating(isCal);
     }
-  }, [modelsLoaded, isWebcamOn, sessionActive, onNewDataPoint, onNewFaceMetrics, onNewPrediction]);
+    if (r.reset === 'camera_move') {
+      toast({ title: 'Camera moved', description: 'Re-calibrating: please look at the screen for 5 seconds.' });
+    }
+    if (r.i % 5 === 0) cb.onNewLatency?.(engine.latency.summary());
+
+    if (!r.metrics && !r.scoreMetrics) {
+      cb.onNewFaceMetrics(null);
+      cb.onNewPrediction(null);
+      return;
+    }
+    cb.onNewFaceMetrics(r.metrics);
+
+    if (sessionActiveRef.current && r.scoreMetrics && timestamp - lastDataPointTime.current >= DATA_POINT_INTERVAL) {
+      lastDataPointTime.current = timestamp;
+      const mlEngine = getMLEngine();
+      // r.predict === null: fallback frame -> unchanged legacy scoring path
+      const prediction = r.predict ? mlEngine.predict(r.scoreMetrics, { dace: r.predict }) : mlEngine.predict(r.scoreMetrics);
+      cb.onNewPrediction(prediction);
+      logger?.log('prediction', timestamp, {
+        i: r.i,
+        score: prediction.rawScore,
+        state: prediction.attentionState,
+        unsure: prediction.unsure ?? false,
+        reason: prediction.unsureReason ?? null,
+        held: prediction.scoreHeld ?? false,
+        label: prediction.daceLabel ?? null,
+        fallback: r.fallback,
+      });
+      // Unsure on the very first tick: no score yet -> show "-" and record no point.
+      if (prediction.unsure && !prediction.scoreHeld) return;
+      cb.onNewDataPoint({
+        timestamp,
+        attentionScore: prediction.rawScore,
+        attentionState: prediction.attentionState,
+        unsure: prediction.unsure ?? false,
+        ...(prediction.unsure && prediction.unsureReason ? { unsureReason: prediction.unsureReason } : {}),
+        ...(prediction.daceLabel ? { behaviorLabel: prediction.daceLabel } : {}),
+      });
+    }
+  }, [toast]);
 
   useEffect(() => {
-    if (isWebcamOn && modelsLoaded) {
-      animationFrameRef.current = requestAnimationFrame(runAnalysis);
+    if (isWebcamOn && modelsLoaded && mode === 'legacy') {
+      legacyLoopIdRef.current++;
+      const s = new FixedTickScheduler(runLegacyTick, {
+        intervalMs: LEGACY_FRAME_INTERVAL_MS,
+        onError: (e) => console.error('[CognEn] legacy tick failed', e),
+      });
+      legacySchedulerRef.current = s;
+      s.start();
+    } else if (isWebcamOn && modelsLoaded && mode === 'dace' && daceEngineRef.current) {
+      const s = new FixedTickScheduler(runDaceTick, {
+        intervalMs: daceEngineRef.current.params.frameIntervalMs,
+        onDropped: (d) => {
+          if (d.dropped % 25 === 1) console.debug(`[CognEn DACE] dropped tick ${d.i} (total ${d.dropped})`);
+          daceLoggerRef.current?.log('event', Date.now(), { event: 'dropped_tick', i: d.i, dropped: d.dropped });
+        },
+        onError: (e) => console.error('[CognEn DACE] tick failed', e),
+      });
+      schedulerRef.current = s;
+      s.start();
     } else {
       stopAnalysis();
     }
     return () => {
       stopAnalysis();
     };
-  }, [isWebcamOn, modelsLoaded, runAnalysis, stopAnalysis]);
+  }, [isWebcamOn, modelsLoaded, mode, runLegacyTick, runDaceTick, stopAnalysis]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -315,7 +547,24 @@ export default function WebcamPanel({
       resetMLEngine();
       metricsAggregatorRef.current = new FaceMetricsAggregator();
       temporalClassifierRef.current?.reset();
+      absenceRef.current.reset();
       lastDataPointTime.current = 0;
+      if (mode === 'dace' && daceEngineRef.current) {
+        // new session: re-estimate the pitch reference (5 s calibration) and start a fresh log
+        daceEngineRef.current.reset();
+        const logger = daceLoggerRef.current;
+        const resolved = daceConfigRef.current;
+        if (logger && resolved) {
+          logger.clear();
+          logger.log('session', 0, {
+            config: resolved.config,
+            params: daceEngineRef.current.params,
+            measurement: daceEngineRef.current.measurementLabel(),
+            selfTest: daceEngineRef.current.selfTestReport,
+            source: 'webcam',
+          });
+        }
+      }
       onStartSession();
     }
   }
@@ -366,6 +615,14 @@ export default function WebcamPanel({
             ref={canvasRef}
             className="absolute top-0 left-0 h-full w-full object-cover"
           />
+          {isWebcamOn && mode === 'dace' && calibrating && (
+            <div className="absolute inset-x-0 top-0 flex justify-center p-3">
+              <div className="rounded-md bg-black/70 px-4 py-2 text-center text-sm text-white">
+                <div className="font-semibold">Look at the screen</div>
+                <div className="text-xs text-white/80">Calibrating head position (about 5 seconds)</div>
+              </div>
+            </div>
+          )}
           {!isWebcamOn && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50">
               {isLoading ? <Loader2 className="h-16 w-16 animate-spin text-muted-foreground" /> : <VideoOff className="h-16 w-16 text-muted-foreground" />}

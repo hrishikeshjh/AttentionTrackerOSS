@@ -10,6 +10,18 @@ Frame sources
 Use ``run_source(source, process_every_n)`` for full control over the
 input type (file / RTSP / camera).  ``run_stream(url)`` is kept for
 backwards compatibility and wraps an RTSPSource internally.
+
+Threading
+---------
+``source.open()``, ``source.read()`` and the whole ``_process_frame`` (YOLO x3,
+tracking, FaceLandmarker, classifier) run in a worker thread via
+``asyncio.to_thread`` so one room's inference does not stall the event loop
+(other rooms, REST, WebSocket pushes). Frames of one room are still
+processed strictly one after another.
+
+Heavy dependencies (cv2, ultralytics, shapely) are imported lazily, and every
+component can be injected through the constructor, so the per-frame logic is
+unit-testable without them (tests/test_room_analyzer.py).
 """
 
 from __future__ import annotations
@@ -18,51 +30,56 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable
 
-import cv2
 import numpy as np
 
-from features.face_metrics import (
-    BlinkDetector,
-    FaceMetricsResult,
-    FatigueCalculator,
-    HeadPoseTracker,
-    calculate_ear,
-    calculate_gaze,
-    calculate_head_pose,
-    calculate_mar,
+from features.dace_measurement import FaceObservation
+from features.hand_object import proximity_from_hands
+from features.hand_proximity import estimate_hand_proximity
+from features.track_features import (  # noqa: F401 (clip_bbox / face_roi re-exported)
+    TrackMetricsState,
+    clip_bbox,
+    face_roi,
+    observe_face,
 )
-from inference.behavior_classifier import BehaviorClassifier, BehaviorResult
+from inference.behavior_classifier import BehaviorClassifier, BehaviorResult, load_onnx_session
 from inference.contradiction_detector import ContradictionDetector
 from input.frame_source import FrameSource, RTSPSource
-from perception.face_landmarks import FaceLandmarksDetector
-from perception.object_detector import ObjectDetector
-from perception.person_detector import PersonDetector
-from perception.pose_estimator import PoseDetection, PoseEstimator
 from server.config import (
     BEHAVIOR_CLASSIFIER_MODEL,
+    HAND_PROXIMITY_NORM,
+    HAND_PROXIMITY_SOURCE,
     INPUT_HEIGHT,
     INPUT_WIDTH,
     PROCESS_EVERY_N_FRAMES,
     TARGET_FPS,
 )
 from tracking.byte_tracker import ByteTrackWrapper, Track
-from tracking.seat_mapper import SeatMapper
+
+if TYPE_CHECKING:
+    from perception.pose_estimator import PoseDetection
 
 logger = logging.getLogger("cognen.analyzer")
+
+# Per-person state is dropped once its track has not been seen for this long
+# (ByteTrack itself forgets a lost track after track_buffer=30 frames, ~2 s
+# at 15 FPS, and never reuses the ID).
+PERSON_STATE_TTL_MS = 30_000
 
 
 # ── Per-person state ──────────────────────────────────────────────────────────
 
 @dataclass
 class PersonState:
-    blink_detector: BlinkDetector       = field(default_factory=BlinkDetector)
-    pose_tracker:   HeadPoseTracker     = field(default_factory=HeadPoseTracker)
-    fatigue_calc:   FatigueCalculator   = field(default_factory=FatigueCalculator)
-    behavior_clf:   BehaviorClassifier  = field(default_factory=lambda:
-                        BehaviorClassifier(BEHAVIOR_CLASSIFIER_MODEL))
+    behavior_clf:   BehaviorClassifier
+    # DACE measurer + blink / head-pose / fatigue trackers. Shared with the
+    # training loaders (features/track_features.py), so training windows see
+    # the same PERCLOS / stability / fidget / openness computation.
+    track_metrics:  TrackMetricsState   = field(default_factory=TrackMetricsState)
     contradiction_detector: ContradictionDetector = field(default_factory=ContradictionDetector)
     last_result: BehaviorResult | None  = None
+    last_seen_ms: int = 0
 
 
 # ── RoomAnalyzer ─────────────────────────────────────────────────────────────
@@ -73,24 +90,90 @@ class RoomAnalyzer:
     One instance per room.  Call run_stream(url) as an asyncio task.
     """
 
-    def __init__(self, room_id: str, seat_map: dict):
+    def __init__(
+        self,
+        room_id: str,
+        seat_map: dict,
+        *,
+        person_detector: Any = None,
+        object_detector: Any = None,
+        pose_estimator: Any = None,
+        face_landmarks: Any = None,
+        tracker: Any = None,
+        seat_mapper: Any = None,
+        behavior_session: Any = None,
+        analyze_posture: Callable | None = None,
+        hand_landmarks: Any = None,
+        hand_proximity_source: str | None = None,
+    ):
         self.room_id   = room_id
         self._running   = False
         self._snapshot: dict = {}
         self._last_frame: np.ndarray | None = None
+        self._source: FrameSource | None = None
 
-        # Perception
-        self._person_det   = PersonDetector()
-        self._object_det   = ObjectDetector(INPUT_WIDTH, INPUT_HEIGHT)
-        self._pose_est     = PoseEstimator()
-        self._face_lms_det = FaceLandmarksDetector(max_faces=1)
+        # Perception (real modules unless injected, e.g. by tests)
+        if person_detector is None:
+            from perception.person_detector import PersonDetector
+            person_detector = PersonDetector()
+        if object_detector is None:
+            from perception.object_detector import ObjectDetector
+            object_detector = ObjectDetector(INPUT_WIDTH, INPUT_HEIGHT)
+        if pose_estimator is None or analyze_posture is None:
+            from perception.pose_estimator import PoseEstimator
+            if pose_estimator is None:
+                pose_estimator = PoseEstimator()
+            if analyze_posture is None:
+                analyze_posture = PoseEstimator.analyze_posture
+        if face_landmarks is None:
+            from perception.face_landmarks import FaceLandmarksDetector
+            face_landmarks = FaceLandmarksDetector(max_faces=1)
+        self._person_det   = person_detector
+        self._object_det   = object_detector
+        self._pose_est     = pose_estimator
+        self._face_lms_det = face_landmarks
+        self._analyze_posture = analyze_posture
+
+        # Hand/object proximity source (server/config.py COGNEN_HAND_PROXIMITY):
+        # "pose" (default) = YOLOv8-pose wrists; "hands" = MediaPipe
+        # HandLandmarker + IoU holding / near (features/hand_object.py),
+        # falling back to wrists when no hand is found; "off" = opt-out.
+        self._hand_source = hand_proximity_source or HAND_PROXIMITY_SOURCE
+        if self._hand_source == "hands" and hand_landmarks is None:
+            from perception.hand_landmarks import HandLandmarksDetector
+            hand_landmarks = HandLandmarksDetector(max_hands=2)
+        self._hand_lms_det = hand_landmarks
+
+        self.face_landmarks_status: str = getattr(face_landmarks, "status", "unknown")
+        if not getattr(face_landmarks, "available", False):
+            logger.error(
+                "[%s] Face landmarks unavailable (status=%s, reason=%s): EAR/MAR/"
+                "head pose/gaze are None for every person and 'absent' cannot be "
+                "inferred from a missing face.",
+                room_id, self.face_landmarks_status,
+                getattr(face_landmarks, "init_error", None),
+            )
 
         # Tracking
-        self._tracker    = ByteTrackWrapper(frame_rate=TARGET_FPS)
-        self._seat_mapper = SeatMapper(seat_map)
+        if tracker is None:
+            tracker = ByteTrackWrapper(frame_rate=TARGET_FPS)
+        if seat_mapper is None:
+            from tracking.seat_mapper import SeatMapper
+            seat_mapper = SeatMapper(seat_map)
+        self._tracker     = tracker
+        self._seat_mapper = seat_mapper
+
+        # One ONNX session shared by every tracked person (was one per track).
+        self._behavior_session = (
+            behavior_session if behavior_session is not None
+            else load_onnx_session(BEHAVIOR_CLASSIFIER_MODEL)
+        )
 
         # Per-person state registry
         self._person_states: dict[int, PersonState] = {}
+
+    def _new_person_state(self) -> PersonState:
+        return PersonState(behavior_clf=BehaviorClassifier(session=self._behavior_session))
 
     # ── Public ───────────────────────────────────────────────────────────────
 
@@ -113,7 +196,11 @@ class RoomAnalyzer:
                              reduce CPU/GPU load on high-FPS streams without
                              affecting buffer freshness.
         """
-        if not source.open():
+        import cv2
+
+        self._source = source
+        # open() can block for the whole connection timeout (RTSP)
+        if not await asyncio.to_thread(source.open):
             logger.error("[%s] Failed to open source: %s", self.room_id, source.name)
             return
 
@@ -135,9 +222,11 @@ class RoomAnalyzer:
                 # Blocking read — run in thread to avoid blocking event loop
                 ok, frame = await asyncio.to_thread(source.read)
 
-                if not ok:
+                if not ok or frame is None:
                     # VideoFileSource returns False on EOF; live sources
                     # return False only after exhausting all reconnect attempts.
+                    # (Every source pairs ok=False with frame=None and ok=True
+                    # with a frame; the None check narrows the Optional.)
                     logger.info("[%s] Source ended: %s", self.room_id, source.name)
                     break
 
@@ -150,7 +239,8 @@ class RoomAnalyzer:
 
                 resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
                 self._last_frame = resized
-                self._snapshot = self._process_frame(resized)
+                # Inference in a worker thread: keeps the event loop free
+                self._snapshot = await asyncio.to_thread(self._process_frame, resized)
 
                 elapsed = time.perf_counter() - t0
                 await asyncio.sleep(max(0.0, process_interval - elapsed))
@@ -178,6 +268,9 @@ class RoomAnalyzer:
 
     def shutdown(self) -> None:
         self._running = False
+        stop = getattr(self._source, "request_stop", None)
+        if callable(stop):
+            stop()   # abort an RTSP reconnect back-off blocking the reader thread
 
     # ── Core pipeline (ARCHITECTURE.md §5.2) ────────────────────────────────
 
@@ -195,9 +288,13 @@ class RoomAnalyzer:
         # 3. PER-PERSON ANALYSIS
         results = []
         for track in tracks:
-            state = self._person_states.setdefault(track.track_id, PersonState())
+            state = self._person_states.get(track.track_id)
+            if state is None:
+                state = self._person_states[track.track_id] = self._new_person_state()
+            state.last_seen_ms = ts_ms
             result = self._analyze_person(frame, track, object_dets, pose_dets, state, ts_ms)
             results.append(result)
+        self._prune_person_states(ts_ms)
 
         # 4. SEAT OCCUPANCY
         seat_statuses = self._seat_mapper.assign(tracks)
@@ -205,7 +302,8 @@ class RoomAnalyzer:
         absent   = [s.seat_id for s in seat_statuses if not s.occupied]
 
         # Attach seat_id to each person result
-        track_seat = {s.track_id: s.seat_id for s in seat_statuses if s.track_id}
+        # `is not None`: track_id 0 is a valid ID (the stub tracker starts at 0)
+        track_seat = {s.track_id: s.seat_id for s in seat_statuses if s.track_id is not None}
         for r in results:
             r["seat_id"] = track_seat.get(r["track_id"])
 
@@ -234,42 +332,29 @@ class RoomAnalyzer:
         state: PersonState,
         ts_ms: int,
     ) -> dict:
-        x1, y1, x2, y2 = (int(v) for v in track.bbox_xyxy)
-        face_crop = frame[y1:y2, x1:x2]
-        fh, fw = face_crop.shape[:2]
         fh_total, fw_total = frame.shape[:2]
-        bbox_face_area = ((x2 - x1) * (y2 - y1)) / max(fw_total * fh_total, 1)
-
-        # Face landmarks (placeholder — integrate face_alignment / dlib here)
-        landmarks = self._get_landmarks(face_crop)
-
-        if landmarks:
-            ear   = calculate_ear(landmarks)
-            mar   = calculate_mar(landmarks)
-            yaw, pitch, roll = calculate_head_pose(landmarks)
-            gaze_x, gaze_y = calculate_gaze(landmarks)
+        clipped = clip_bbox(track.bbox_xyxy, fw_total, fh_total)
+        if clipped is not None:
+            cx1, cy1, cx2, cy2 = clipped
+            bbox_face_area = ((cx2 - cx1) * (cy2 - cy1)) / max(fw_total * fh_total, 1)
         else:
-            ear = mar = yaw = pitch = roll = gaze_x = gaze_y = None
+            bbox_face_area = 0.0
 
-        blink_det, blink_rate, perclos = state.blink_detector.update(ear, ts_ms)
-        state.pose_tracker.add(yaw, pitch, roll, ts_ms)
-        ear_mean, ear_var = state.blink_detector.ear_stats()
-        fatigue = state.fatigue_calc.update(perclos, blink_rate, ear_mean, ts_ms)
+        # Face landmarks: MediaPipe FaceLandmarker (IMAGE mode) on the upper
+        # square of the clipped person box, mapped to 68 points in FRAME
+        # coordinates (perception/face_landmarks.py _MP_TO_68).
+        roi = face_roi(track.bbox_xyxy, fw_total, fh_total)
+        obs = self._get_face(frame, roi)
 
-        metrics = FaceMetricsResult(
-            ear=ear, mar=mar,
-            pitch=pitch, yaw=yaw, roll=roll,
-            gaze_x=gaze_x, gaze_y=gaze_y,
-            blink_detected=blink_det,
-            blink_rate=blink_rate, perclos=perclos,
-            fatigue_index=fatigue,
-            fidget_score=state.pose_tracker.fidget(),
-            head_pose_stability=state.pose_tracker.stability(),
-            face_distance=None,
+        # Per-track measurement (features/track_features.py, shared with the
+        # training loaders): DACE pitch / gaze / gaze-corrected openness and
+        # PERCLOS, blink rate, head-pose stability, fidget, fatigue.
+        last = state.last_result.label if state.last_result else None
+        metrics = state.track_metrics.measure(
+            ts_ms, obs,
+            face_detector_available=bool(self._face_lms_det.available),
+            attentive=last in ("attentive_screen", "attentive_reading"),
             face_area=bbox_face_area,
-            mouth_openness=None,
-            ear_variance=ear_var,
-            pose_variance=state.pose_tracker.pose_variance(),
         )
 
         # Associate objects with this person's bbox
@@ -280,9 +365,9 @@ class RoomAnalyzer:
 
         # Associate nearest pose
         person_pose = self._nearest_pose(track.bbox_xyxy, pose_dets)
-        posture = PoseEstimator.analyze_posture(person_pose) if person_pose else None
+        posture = self._analyze_posture(person_pose) if person_pose else None
 
-        hand_proximity = "hands_not_visible"  # extend with HandTracker if needed
+        hand_proximity = self._hand_proximity(frame, track, person_objs, person_pose)
         behavior = state.behavior_clf.update({
             "metrics": metrics,
             "detected_objects": person_objs,
@@ -293,8 +378,14 @@ class RoomAnalyzer:
 
         # Cross-Modal Contradiction Vector -- computed alongside the
         # behavior classifier but never folded into attention_score (see
-        # inference/contradiction_detector.py).
-        contradiction = state.contradiction_detector.compute(metrics, person_objs, hand_proximity)
+        # inference/contradiction_detector.py). The behavior label is passed so
+        # an "attentive_reading" window counts as engagement with a visible
+        # book (no "prop_without_engagement"). Categories are passed through
+        # as-is: coherent / fatigue_masking / prop_without_engagement /
+        # context_conflict / unclassified.
+        contradiction = state.contradiction_detector.compute(
+            metrics, person_objs, hand_proximity, behavior.label,
+        )
 
         return {
             "track_id":      track.track_id,
@@ -308,15 +399,43 @@ class RoomAnalyzer:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _get_landmarks(self, face_crop: np.ndarray):
-        """
-        Detect 68 facial landmarks from a face crop using MediaPipe FaceMesh.
-        Returns a list of Point2D objects (ibug 68-point convention) or None.
-        """
-        if not self._face_lms_det.available or face_crop.size == 0:
-            return None
-        results = self._face_lms_det.detect(face_crop)
-        return results[0] if results else None
+    def _get_face(self, frame: np.ndarray, roi: tuple[int, int, int, int] | None) -> FaceObservation | None:
+        """Face landmarker inside *roi* (features/track_features.observe_face,
+        the same call the training loaders make)."""
+        return observe_face(self._face_lms_det, frame, roi)
+
+    def _get_landmarks(self, frame: np.ndarray, roi: tuple[int, int, int, int] | None):
+        """68 facial landmarks (FRAME pixels) inside *roi*, or None."""
+        obs = self._get_face(frame, roi)
+        return obs.landmarks68 if obs is not None else None
+
+    def _hand_proximity(self, frame: np.ndarray, track: Track, person_objs: list, person_pose) -> str:
+        """HandObjectProximity label for one person (see __init__ for the sources)."""
+        if self._hand_source == "off":
+            return "hands_not_visible"
+        if self._hand_source == "hands" and self._hand_lms_det is not None \
+                and getattr(self._hand_lms_det, "available", False):
+            fh, fw = frame.shape[:2]
+            box = clip_bbox(track.bbox_xyxy, fw, fh)
+            if box is not None:
+                x1, y1, x2, y2 = box
+                hands = self._hand_lms_det.detect(frame[y1:y2, x1:x2], offset=(x1, y1))
+                label = proximity_from_hands([h.landmarks for h in hands], person_objs)
+                if label is not None:
+                    return label
+        if person_pose is not None:
+            return estimate_hand_proximity(
+                person_pose.keypoints, track.bbox_xyxy, person_objs, max_dist=HAND_PROXIMITY_NORM,
+            )
+        return "hands_not_visible"
+
+    def _prune_person_states(self, now_ms: int) -> None:
+        stale = [
+            tid for tid, st in self._person_states.items()
+            if now_ms - st.last_seen_ms > PERSON_STATE_TTL_MS
+        ]
+        for tid in stale:
+            del self._person_states[tid]
 
     def _bbox_overlap(self, person_xyxy, obj_xyxy) -> bool:
         """True if object bbox centre falls inside person bbox."""

@@ -2,15 +2,17 @@
 realistic_synthetic_loader.py — Class-conditional synthetic dataset generator.
 
 Replaces pure-random noise with statistically grounded feature windows that
-encode the biometric distributions identified in experiment_report.md §3.1.
+encode hand-set biometric distributions (originally motivated by the RETRACTED
+evaluation/reports/archive/experiment_report.md §3.1; not fitted to real data).
 
 Each window is a 15-frame AR(1) temporal sequence, so the model can learn
 true temporal patterns (sustained vs momentary behavior).
 
-Feature vector (13 dims, index order fixed):
+Feature vector (FEATURE_DIM = 15, FEATURE_VECTOR_VERSION 2; index order and
+sign convention defined in features/feature_vector.py):
   [0]  gaze_x          [-1,  1]
-  [1]  gaze_y          [-1,  1]
-  [2]  pitch_norm      [-1,  1]   pitch/90
+  [1]  gaze_y          [-1,  1]   eyes DOWN = NEGATIVE (blendshape gaze, negated)
+  [2]  pitch_norm      [-1,  1]   relative pitch/90, head DOWN = NEGATIVE
   [3]  yaw_norm        [-1,  1]   yaw/90
   [4]  EAR             [ 0,  1]
   [5]  PERCLOS         [ 0,  1]   /100
@@ -21,6 +23,16 @@ Feature vector (13 dims, index order fixed):
   [10] has_none        {0, 1}
   [11] fidget          [ 0,  1]   /100
   [12] proximity_code  {0.00, 0.25, 0.50, 0.75, 1.00}
+  [13] posture_upright {0, 1}     derived per frame: lean < 15 deg
+  [14] posture_lean    [ 0,  1]   lean angle / 90
+
+Sign fix (v3 model): reading / phone windows used to have gaze_y = +0.65/+0.68
+while every rule and pitch mean assumed down = negative, and the measured
+legacy pitch rose when looking down. Both are now negative for looking down,
+matching features/dace_measurement.py (+down measurement, flipped once) and
+inference/behavior_classifier.py's rules. These class parameters are
+hand-set assumptions, not fitted to real data: a model trained only on this
+generator is evaluated circularly (see evaluation/reports/).
 """
 
 from __future__ import annotations
@@ -30,6 +42,7 @@ from typing import Generator
 
 import numpy as np
 
+from features.feature_vector import POSTURE_UNKNOWN, POSTURE_UPRIGHT_MAX_LEAN_DEG
 from training.datasets.base_dataset import (
     BEHAVIOR_CLASSES,
     CLASS_TO_IDX,
@@ -41,7 +54,7 @@ from training.datasets.base_dataset import (
 # ── Per-class feature distributions ───────────────────────────────────────────
 # Each class has (mean, std) for continuous features and rules for binary features.
 # Distributions derived from:
-#   - experiment_report.md §3.1 overlap table
+#   - evaluation/reports/archive/experiment_report.md §3.1 overlap table (RETRACTED report)
 #   - Known biometric ranges (EAR thresholds, PERCLOS norms)
 #   - Classroom observation literature
 
@@ -59,6 +72,13 @@ _LAP  = 9   # has_laptop
 _NONE = 10  # has_none
 _FID  = 11  # fidget /100
 _PROX = 12  # proximity_code
+_UP   = 13  # posture_upright (derived from lean)
+_LEAN = 14  # posture lean /90
+
+# Share of windows whose posture is unknown (no pose matched): encoded as
+# features.feature_vector.POSTURE_UNKNOWN for the whole window.
+P_POSTURE_UNKNOWN = 0.15
+_UPRIGHT_MAX_LEAN_NORM = POSTURE_UPRIGHT_MAX_LEAN_DEG / 90.0
 
 # Temporal autocorrelation per feature (higher = smoother transitions)
 _RHO: np.ndarray = np.array([
@@ -75,6 +95,8 @@ _RHO: np.ndarray = np.array([
     1.00,  # has_none    — binary, held constant per window
     0.65,  # fidget      — movement varies quickly
     1.00,  # proximity   — set at window start, held
+    1.00,  # upright     — derived from lean per frame
+    0.90,  # lean        — posture changes slowly
 ], dtype=np.float32)
 
 
@@ -114,6 +136,11 @@ class _ClassSpec:
     prox_when_phone: float
     prox_baseline: float
     noise_scale: float
+    lean_mu: float = 0.08   # lean angle / 90
+    lean_sd: float = 0.05
+    # P(hands hold the detected phone/book): the server's wrist/hand proximity
+    # does not always see the grip, and an object can lie on the desk unused.
+    p_hold: float = 0.75
 
 
 # Class distributions — carefully calibrated to match biometric observations
@@ -121,20 +148,22 @@ _SPECS: dict[str, _ClassSpec] = {
     "attentive_screen": _ClassSpec(
         gaze_x_mu=0.00, gaze_x_sd=0.12,
         gaze_y_mu=0.00, gaze_y_sd=0.10,
-        pitch_mu=-0.03, pitch_sd=0.05,   # ≈ −3°
+        pitch_mu=0.00,  pitch_sd=0.05,   # relative pitch ≈ 0 (the reference IS screen-facing)
         yaw_mu=0.00,    yaw_sd=0.08,
         ear_mu=0.32,    ear_sd=0.03,
         perc_mu=0.03,   perc_sd=0.015,
         stab_mu=0.87,   stab_sd=0.07,
         fidget_mu=0.10, fidget_sd=0.06,
-        p_book=0.00,  p_phone=0.00,  p_laptop=0.50,
+        p_book=0.10,  p_phone=0.06,  p_laptop=0.50,   # objects on the desk, unused
         prox_when_book=0.75,  prox_when_phone=1.00,  prox_baseline=0.25,
         noise_scale=0.03,
+        lean_mu=6 / 90, lean_sd=4 / 90,   # upright
+        p_hold=0.05,
     ),
     "attentive_reading": _ClassSpec(
         gaze_x_mu=0.00, gaze_x_sd=0.10,
-        gaze_y_mu=0.65, gaze_y_sd=0.08,   # looking down (normalised)
-        pitch_mu=-0.37, pitch_sd=0.05,    # ≈ −33° sustained downward
+        gaze_y_mu=-0.55, gaze_y_sd=0.12,  # eyes down (negated eyeLookDown blendshape)
+        pitch_mu=-0.30, pitch_sd=0.07,    # ≈ 27° below the screen reference
         yaw_mu=0.00,    yaw_sd=0.06,
         ear_mu=0.30,    ear_sd=0.02,
         perc_mu=0.04,   perc_sd=0.015,
@@ -143,11 +172,12 @@ _SPECS: dict[str, _ClassSpec] = {
         p_book=0.82,  p_phone=0.00,  p_laptop=0.10,
         prox_when_book=0.75,  prox_when_phone=1.00,  prox_baseline=0.25,
         noise_scale=0.025,
+        lean_mu=20 / 90, lean_sd=7 / 90,  # leaning over the desk
     ),
     "using_phone": _ClassSpec(
         gaze_x_mu=0.05, gaze_x_sd=0.10,
-        gaze_y_mu=0.68, gaze_y_sd=0.09,   # looking down at phone
-        pitch_mu=-0.42, pitch_sd=0.05,    # ≈ −38° (slightly more than reading)
+        gaze_y_mu=-0.60, gaze_y_sd=0.12,  # eyes down at the phone
+        pitch_mu=-0.36, pitch_sd=0.07,    # ≈ 32° below the reference (slightly more than reading)
         yaw_mu=0.00,    yaw_sd=0.08,
         ear_mu=0.30,    ear_sd=0.025,
         perc_mu=0.04,   perc_sd=0.020,
@@ -156,32 +186,36 @@ _SPECS: dict[str, _ClassSpec] = {
         p_book=0.00,  p_phone=0.87,  p_laptop=0.00,
         prox_when_book=0.75,  prox_when_phone=1.00,  prox_baseline=0.25,
         noise_scale=0.03,
+        lean_mu=18 / 90, lean_sd=7 / 90,
     ),
     "distracted": _ClassSpec(
         gaze_x_mu=0.00, gaze_x_sd=0.32,   # wide gaze deviation
         gaze_y_mu=0.00, gaze_y_sd=0.22,
-        pitch_mu=0.05,  pitch_sd=0.15,    # variable, can look sideways
+        pitch_mu=0.03,  pitch_sd=0.15,    # variable; slightly up / around on average
         yaw_mu=0.00,    yaw_sd=0.20,      # turning head side-to-side
         ear_mu=0.31,    ear_sd=0.03,
         perc_mu=0.05,   perc_sd=0.02,
         stab_mu=0.48,   stab_sd=0.15,     # low stability
         fidget_mu=0.38, fidget_sd=0.12,   # high fidget
-        p_book=0.00,  p_phone=0.00,  p_laptop=0.20,
+        p_book=0.05,  p_phone=0.10,  p_laptop=0.20,   # phone visible but not in use
         prox_when_book=0.75,  prox_when_phone=1.00,  prox_baseline=0.00,
         noise_scale=0.05,
+        lean_mu=12 / 90, lean_sd=9 / 90,  # turning / shifting
+        p_hold=0.15,
     ),
     "drowsy": _ClassSpec(
         gaze_x_mu=0.00, gaze_x_sd=0.07,
         gaze_y_mu=0.02, gaze_y_sd=0.07,
-        pitch_mu=-0.05, pitch_sd=0.08,
+        pitch_mu=-0.08, pitch_sd=0.10,    # head nodding down a little
         yaw_mu=0.00,    yaw_sd=0.05,
-        ear_mu=0.18,    ear_sd=0.04,      # EAR < 0.22 → drowsy threshold
+        ear_mu=0.18,    ear_sd=0.04,      # gaze-corrected openness < 0.21 (r < k = 0.7)
         perc_mu=0.32,   perc_sd=0.08,     # PERCLOS > 20% → drowsy threshold
         stab_mu=0.58,   stab_sd=0.13,     # head nodding
         fidget_mu=0.04, fidget_sd=0.03,
         p_book=0.00,  p_phone=0.00,  p_laptop=0.05,
         prox_when_book=0.75,  prox_when_phone=1.00,  prox_baseline=0.00,
         noise_scale=0.02,
+        lean_mu=24 / 90, lean_sd=9 / 90,  # slumped
     ),
     "absent": _ClassSpec(
         gaze_x_mu=0.00, gaze_x_sd=0.02,   # no face → near-zero
@@ -195,6 +229,7 @@ _SPECS: dict[str, _ClassSpec] = {
         p_book=0.00,  p_phone=0.00,  p_laptop=0.10,
         prox_when_book=0.75,  prox_when_phone=1.00,  prox_baseline=0.00,
         noise_scale=0.01,
+        lean_mu=10 / 90, lean_sd=10 / 90,
     ),
 }
 
@@ -217,10 +252,14 @@ def _sample_binary_context(spec: _ClassSpec, rng: np.random.Generator) -> np.nda
     feat[_LAP]  = has_laptop
     feat[_NONE] = has_none
 
-    if has_phone:
+    held = rng.random() < spec.p_hold
+    if has_phone and held:
         feat[_PROX] = spec.prox_when_phone
-    elif has_book:
+    elif has_book and held:
         feat[_PROX] = spec.prox_when_book
+    elif has_phone or has_book:
+        # object present, grip not seen: hands_not_visible or hands_on_desk
+        feat[_PROX] = float(rng.choice([0.0, 0.25]))
     else:
         # Randomly choose: hands_not_visible=0.0, hands_on_desk=0.25, holding_pen=0.50
         feat[_PROX] = float(rng.choice([0.0, 0.25, 0.50]))
@@ -251,6 +290,7 @@ def _generate_window(
         spec.stab_mu,
         0.0, 0.0, 0.0, 0.0,          # binary — handled separately
         spec.fidget_mu, 0.0,          # proximity handled separately
+        0.0, spec.lean_mu,            # upright derived from lean
     ], dtype=np.float32)
 
     stds = np.array([
@@ -260,7 +300,9 @@ def _generate_window(
         spec.stab_sd,
         0.0, 0.0, 0.0, 0.0,
         spec.fidget_sd, 0.0,
+        0.0, spec.lean_sd,
     ], dtype=np.float32)
+    posture_unknown = rng.random() < P_POSTURE_UNKNOWN
 
     # Sample fixed binary context once for entire window
     context = _sample_binary_context(spec, rng)
@@ -300,6 +342,10 @@ def _generate_window(
     frames[:, _PERC] = _clamp(frames[:, _PERC],  0.0,  1.0)
     frames[:, _STAB] = _clamp(frames[:, _STAB],  0.0,  1.0)
     frames[:, _FID]  = _clamp(frames[:, _FID],   0.0,  1.0)
+    frames[:, _LEAN] = _clamp(frames[:, _LEAN],  0.0,  1.0)
+    frames[:, _UP]   = (frames[:, _LEAN] < _UPRIGHT_MAX_LEAN_NORM).astype(np.float32)
+    if posture_unknown:
+        frames[:, _UP], frames[:, _LEAN] = POSTURE_UNKNOWN
 
     return frames
 
@@ -425,14 +471,19 @@ class RealisticSyntheticDataset(BaseBehaviorDataset):
         self.val_fraction   = val_fraction
         self.window_size    = window_size
 
-        self._windows, self._labels = self._build_dataset()
+        self._windows, self._labels, self._groups = self._build_dataset()
 
-    def _build_dataset(self) -> tuple[np.ndarray, np.ndarray]:
+    DATASET_NAME = "synthetic"
+
+    def _build_dataset(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rng = np.random.default_rng(self.seed)
         n   = self.n_per_class
 
         all_windows: list[np.ndarray] = []
         all_labels:  list[int]        = []
+        # One group per generated BASE window; its augmented copies share it,
+        # so a copy can never sit on the other side of a split from its source.
+        all_groups:  list[str]        = []
 
         for cls_name in BEHAVIOR_CLASSES:
             cls_idx = CLASS_TO_IDX[cls_name]
@@ -444,36 +495,44 @@ class RealisticSyntheticDataset(BaseBehaviorDataset):
                          for _ in range(n)]
 
             if self.split == "val":
+                offset = n - n_val
                 selected = base_wins[-n_val:]   # last n_val are val
             else:
+                offset = 0
                 selected = base_wins[:n_train]  # first n_train are train
+            gids = [f"synthetic:seed{self.seed}:{cls_name}:{offset + k}" for k in range(len(selected))]
 
             # Add base windows
             all_windows.extend(selected)
             all_labels.extend([cls_idx] * len(selected))
+            all_groups.extend(gids)
 
             # Add augmented copies (train only)
             if self.split == "train":
-                for base_win in selected:
+                for base_win, gid in zip(selected, gids):
                     for _ in range(self.augment_factor):
                         aug = augment_window(base_win, cls_name, rng)
                         all_windows.append(aug)
                         all_labels.append(cls_idx)
+                        all_groups.append(gid)
 
         # Shuffle so classes interleave
         idx = rng.permutation(len(all_windows))
         windows = np.stack(all_windows)[idx].astype(np.float32)
         labels  = np.array(all_labels, dtype=np.int64)[idx]
-        return windows, labels
+        groups  = np.array(all_groups, dtype=object)[idx]
+        return windows, labels, groups
 
     def __len__(self) -> int:
         return len(self._labels)
 
     def _iter_samples(self) -> Generator[tuple[np.ndarray, int, object], None, None]:
-        # group_id=None: each synthetic window is independently generated,
-        # no real subject/clip continuity to leak across a split.
-        for window, label in zip(self._windows, self._labels):
-            yield window, int(label), None
+        # group_id = the base window it was generated from (augmented copies
+        # included). Train base windows are the first n_train of each class,
+        # val the last n_val, so train and val groups are disjoint by
+        # construction (train_classifier.py keeps this split, it does not re-pool).
+        for window, label, group in zip(self._windows, self._labels, self._groups):
+            yield window, int(label), group
 
     def class_distribution(self) -> dict[str, int]:
         """Return count per class label."""

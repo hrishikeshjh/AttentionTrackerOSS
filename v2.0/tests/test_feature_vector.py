@@ -16,7 +16,8 @@ import numpy as np
 import pytest
 
 from features.face_metrics import Point2D
-from features.feature_vector import FEATURE_DIM, encode_feature_vector, extract_feature_vector_from_landmarks
+from features.feature_vector import FEATURE_DIM_V1 as FEATURE_DIM
+from features.feature_vector import encode_feature_vector, extract_feature_vector_from_landmarks
 
 
 def _synthetic_landmarks(nose=(50, 55), l_eye=(40, 50), r_eye=(60, 50), chin=(50, 90)):

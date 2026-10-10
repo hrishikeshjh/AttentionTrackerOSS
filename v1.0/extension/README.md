@@ -1,5 +1,7 @@
 # CognEn Chrome Extension
 
+> **Scoring parity.** `lib/ml-core.js` is a plain-JS port of the web app's `src/lib/scoring/` package and the legacy `MLEngine` path of `src/lib/ml-engine.ts`: same EAR/MAR, head pose, gaze, blink detector (50-500 ms closures, no extra debounce), PERCLOS, fatigue (PERCLOS x2 capped at 40, EAR trend over 10 samples x100), fidget (x5), stability, `PrimaryFaceSelector` hysteresis, aggregator outputs (incl. `eyebrowRaise`, `marVariance`, `poseVariance`), EMA alpha 0.15 and thresholds 70/40. The extension has no object detector or hand tracker, so both modes score with `FEATURE_WEIGHTS_LEGACY` (what the web engine uses when `detectedObjects` is undefined). The context features (`contextAwarePitch`, `objectContext`, `handObjectProximity`, `temporalPattern`) are implemented with the web semantics but are not weighted. `src/lib/__tests__/extension-equivalence.test.ts` loads `ml-core.js` in node and checks it against the TS modules on synthetic landmark sequences. The pitch-baseline defect described in `v1.0/README.md` §24 applies here too, because the formulas are the same.
+
 A Chrome extension for real-time cognitive engagement tracking using facial analysis.
 
 ## Features
@@ -8,7 +10,6 @@ A Chrome extension for real-time cognitive engagement tracking using facial anal
 - **PERCLOS Analysis**: Percentage of Eye Closure tracking for fatigue detection
 - **Blink Rate Monitoring**: Track blink patterns for engagement insights
 - **Fatigue Detection**: Get alerts when fatigue is detected
-- **Tab Activity Tracking**: Monitor multitasking behavior
 - **Session Statistics**: View average scores and session summaries
 
 ## Installation
@@ -23,23 +24,55 @@ A Chrome extension for real-time cognitive engagement tracking using facial anal
 
 ### Required Permissions
 
-- **Camera**: For facial landmark detection
-- **Storage**: To save session data and settings
-- **Notifications**: For attention and break reminders
-- **Active Tab**: To detect tab switching (multitasking), and to cover ad-hoc standalone-mode camera access on any page the user explicitly invokes the extension on
-- **Host permissions** (updated): scoped to `meet.google.com`, `*.zoom.us`, and `teams.microsoft.com` only — a previously-present `<all_urls>` entry was removed since it granted unnecessary access beyond what Meet-mode content-script injection actually needs. See the main [v1.0 README §23](../README.md#23-security--dependency-hygiene) for the full security/dependency hygiene pass this was part of.
+- **Camera** (requested by the offscreen document via `getUserMedia`): facial landmark detection in standalone mode.
+- **storage**: settings, last detection, and the session record (`chrome.storage.session`, falling back to `chrome.storage.local`).
+- **offscreen**: standalone-mode webcam capture in a hidden document.
+- **scripting** + **activeTab** + host permissions for `meet.google.com`, `*.zoom.us`, `teams.microsoft.com`: injecting the in-page analyser on call pages.
+- **alarms**: break reminders (survive service-worker restarts).
+- **notifications**: low-attention alerts and break reminders (both controlled by the popup settings).
+- `web_accessible_resources` exposes only `lib/*`, and only to the three call hosts above (it was `<all_urls>`).
 
-### Performance
+### Cadence and performance
 
-The offscreen-document detection loop is now throttled to a 200ms (5fps) budget instead of running unthrottled on every display-refresh tick (~60fps) — cutting CPU usage roughly 10× during active sessions, since only 5fps of data is ever consumed downstream anyway. Storage writes are fire-and-forget and debounced (only on a meaningful score change or a 500ms cap) rather than blocking the detection loop. See [v1.0 README §20 & §22](../README.md#20-shared-scoring-core--cross-language-consistency) for the shared scoring core and testing details.
+Both modes analyse frames on a fixed 200 ms `setTimeout` tick (5 FPS; `requestAnimationFrame` is not used because rAF is paused in hidden/offscreen documents) and predict once per second, like the web app (`DATA_POINT_INTERVAL` = 1000 ms). This gives the 0.15 EMA the same time constant in the extension and the web app. One detection per second goes to the background, which owns the badge, the session statistics and the alerts.
+
+### Settings and alerts
+
+- **Alert threshold** (default 40): if the score stays below it for 30 s, a notification fires (at most one every 5 min).
+- **Break reminder** (default 45 min): a `chrome.alarms` alarm that fires a notification while a session is active.
+- **Notifications** toggle turns both off. **Sound alerts** decides whether the notification is silent.
+
+### Meet / Zoom / Teams mode: messaging channel
+
+The analyser has to run in the page's MAIN world (it reads the page's `<video>` elements), which it shares with the page's own scripts. To limit what those scripts can do:
+
+1. `background.js` generates a random 256-bit key for each session. It sends the key through `chrome.scripting.executeScript` `args` to `bridge.js` (ISOLATED world) and to `content.js` (MAIN world). The key never goes into the DOM, storage or `postMessage`.
+2. `content.js` signs every message (`seq|kind|payload`) with HMAC-SHA-256 and posts it with `window.postMessage`.
+3. `bridge.js` checks the MAC with the isolated world's own `crypto.subtle`, rejects replays (`seq` must increase), whitelists and range-checks the payload, and relays it with `chrome.runtime.sendMessage`.
+4. `background.js` accepts it only from the session tab and only with the current session id.
+
+The old `localStorage` channel, which any page script could read or write, has been removed.
+
+**What is still exposed:** page scripts can read the posted messages (scores, blink rate, fatigue) and the widget, and can call `window.__cognen.content.stop()` or break the injected globals. A page that patched `crypto.subtle` or `postMessage` before injection could capture the key. Without that kind of tampering, a page cannot forge or replay accepted messages.
+
+All injected scripts are wrapped in IIFEs and attach to a single `window.__cognen` namespace with sentinels, so a second START reuses them and does not throw on redeclared bindings.
+
+### Which video is analysed
+
+The self-view tile is picked by ranking the playing `<video>` elements:
+
+1. A `srcObject` with a live local-capture track (`getSettings().deviceId` set; remote WebRTC tracks have none).
+2. A horizontally mirrored element or close ancestor (negative x scale, e.g. `scaleX(-1)`). All three apps mirror only the self-view.
+3. If neither applies, the largest visible area.
+
+The widget's **Switch video** button cycles through the playing videos and resets the scoring history.
 
 ## Usage
 
 1. Click the CognEn icon in your Chrome toolbar
-2. Click "Start Camera" to enable webcam access
-3. Click "Start Session" to begin tracking your attention
-4. The badge on the extension icon will show your current score
-5. View detailed metrics in the popup
+2. Click "Start Session" (standalone uses your webcam; on a Meet/Zoom/Teams tab the in-page video is analysed)
+3. The badge on the extension icon will show your current score
+4. View detailed metrics in the popup
 
 ## Score Interpretation
 
@@ -58,7 +91,7 @@ The offscreen-document detection loop is now throttled to a 200ms (5fps) budget 
 
 - All processing happens locally in your browser
 - No video data is sent to any server
-- Session data is stored locally in Chrome's storage
+- Session data is stored locally in Chrome's storage (session summary in `lastSession`)
 
 ## Troubleshooting
 

@@ -3,14 +3,22 @@ SeatMapper — assigns tracked persons to pre-configured seat zones.
 (ARCHITECTURE.md §3 Tracking Layer + §3 Seat Occupancy Detection)
 
 Seat zones are polygons in normalised [0,1] frame coordinates.
-A person is assigned to a seat when IoU(person_bbox, seat_polygon) > threshold.
+A (track, seat) pair is a candidate when the person-box centre lies inside
+the seat polygon, or else when IoU(person_bbox, seat_polygon) >=
+SEAT_IOU_THRESHOLD.
+
+Assignment is ONE-TO-ONE: candidates are taken greedily in descending order
+of (centre-contained, IoU), and each seat and each track is used at most
+once. Previously each seat independently picked its best track, so one
+large box spanning two seats occupied both and a second person could lose a
+seat to it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 from shapely.geometry import box as shapely_box
 
 from server.config import INPUT_HEIGHT, INPUT_WIDTH, SEAT_IOU_THRESHOLD
@@ -45,41 +53,42 @@ class SeatMapper:
         tracks: list,   # list of Track from byte_tracker
     ) -> list[SeatStatus]:
         """
-        Return the occupancy status of every configured seat.
-        If two persons overlap the same seat, the one with higher IoU wins.
+        Return the occupancy status of every configured seat (in seat_map
+        order). Each track occupies at most one seat and each seat holds at
+        most one track.
         """
-        # Build seat → best_track mapping
-        seat_best: dict[str, tuple[float, int]] = {}  # seat_id → (iou, track_id)
-
-        for track in tracks:
+        candidates: list[tuple[int, float, int, str, int]] = []
+        for t_idx, track in enumerate(tracks):
             x1, y1, x2, y2 = track.bbox_xyxy
             person_box = shapely_box(x1, y1, x2, y2)
-            # Centre of the person's bounding box in pixel space
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            centre = Point(cx, cy)
 
-            for seat_id, seat_poly in self._seat_polygons.items():
+            for s_idx, (seat_id, seat_poly) in enumerate(self._seat_polygons.items()):
+                union = person_box.union(seat_poly).area
+                iou = person_box.intersection(seat_poly).area / union if union > 0 else 0.0
                 # Primary: centre-point containment (works for both CCTV and
                 # close-up webcam where IoU of a large bbox is low).
-                from shapely.geometry import Point
-                if seat_poly.contains(Point(cx, cy)):
-                    score = 1.0  # prefer centroid-matched seats
-                else:
-                    # Fallback: IoU for partial overlaps (e.g. person at seat edge)
-                    intersection = person_box.intersection(seat_poly).area
-                    union = person_box.union(seat_poly).area
-                    score = intersection / union if union > 0 else 0.0
-                    if score < SEAT_IOU_THRESHOLD:
-                        continue
+                contained = 1 if seat_poly.contains(centre) else 0
+                if not contained and iou < SEAT_IOU_THRESHOLD:
+                    continue
+                candidates.append((contained, iou, t_idx, seat_id, s_idx))
 
-                prev_score, _ = seat_best.get(seat_id, (0.0, -1))
-                if score > prev_score:
-                    seat_best[seat_id] = (score, track.track_id)
+        # Best first; ties broken deterministically by track / seat order.
+        candidates.sort(key=lambda c: (-c[0], -c[1], c[2], c[4]))
+        seat_track: dict[str, int] = {}
+        used_tracks: set[int] = set()
+        for _contained, _iou, t_idx, seat_id, _s_idx in candidates:
+            if seat_id in seat_track or t_idx in used_tracks:
+                continue
+            seat_track[seat_id] = tracks[t_idx].track_id
+            used_tracks.add(t_idx)
 
         return [
             SeatStatus(
                 seat_id=sid,
-                occupied=sid in seat_best,
-                track_id=seat_best[sid][1] if sid in seat_best else None,
+                occupied=sid in seat_track,
+                track_id=seat_track.get(sid),
             )
             for sid in self._seat_polygons
         ]

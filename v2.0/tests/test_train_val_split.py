@@ -25,24 +25,24 @@ def test_no_group_leaks_across_split():
     n_groups = 20
     windows_per_group = 10
 
-    X, y, groups = [], [], []
+    X_rows, y_list, group_list = [], [], []
     for g in range(n_groups):
         for _ in range(windows_per_group):
-            X.append(rng.random((15, 13)).astype(np.float32))
-            y.append(rng.integers(0, 6))
-            groups.append(f"clip_{g}")
+            X_rows.append(rng.random((15, 13)).astype(np.float32))
+            y_list.append(rng.integers(0, 6))
+            group_list.append(f"clip_{g}")
 
-    X = np.stack(X)
-    y = np.array(y)
-    groups = np.array(groups, dtype=object)
+    X = np.stack(X_rows)
+    y = np.array(y_list)
+    groups = np.array(group_list, dtype=object)
 
     X_tr, y_tr, X_val, y_val = _train_val_split(X, y, groups, val_ratio=0.2, seed=1)
 
     # Recover which group each returned sample belongs to by re-deriving
     # membership via a lookup table (groups are known ahead of time here).
     group_of: dict[str, list[int]] = {}
-    for i, g in enumerate(groups):
-        group_of.setdefault(g, []).append(i)
+    for i, gname in enumerate(group_list):
+        group_of.setdefault(gname, []).append(i)
 
     # Re-run split index recovery: since _train_val_split only returns
     # X/y (not indices), verify via set membership on the raw arrays
@@ -61,13 +61,13 @@ def test_no_group_leaks_across_split():
     assert len(train_groups) > 0
 
 
-def test_degenerate_single_group_falls_back_gracefully():
-    """A single-group input can't be group-split -- must not crash."""
+def test_single_group_cannot_be_split_without_leakage():
+    """A single group cannot be split without putting it on both sides; this
+    used to fall back to a random per-window split (silent leakage)."""
     rng = np.random.default_rng(0)
     X = rng.random((50, 15, 13)).astype(np.float32)
     y = rng.integers(0, 6, size=50)
     groups = np.array(["only_group"] * 50, dtype=object)
 
-    X_tr, y_tr, X_val, y_val = _train_val_split(X, y, groups, val_ratio=0.2, seed=1)
-    assert len(X_tr) + len(X_val) == 50
-    assert len(X_val) > 0
+    with pytest.raises(ValueError, match="single group"):
+        _train_val_split(X, y, groups, val_ratio=0.2, seed=1)

@@ -1,4 +1,9 @@
+> **RETRACTED (archived 2026-10-10).** Not a valid measurement -- see `README.md` in this folder. Fabricated / circular evaluation; do not quote any number below.
+
 # CognEn v2.0 — Experiment Report
+
+> **RETRACTION / CAUTION (added after the fact).** This report was produced before the training and evaluation pipeline was corrected (see v2.0/README.md §23). Its numbers come from a model trained on random uniform synthetic data and evaluated with code that could fabricate or synthesize predictions; treat every figure as **not a valid measurement**. The committed `eval_20260309_*.json` files are likewise pre-fix outputs. No result has been measured on real data. The served `behavior_classifier.onnx` is this Experiment 1 model (val_acc 0.213). DACE is v1.0-only and does not affect these results.
+
 **Date**: 2026-03-09
 **Run**: Synthetic-data baseline (no real dataset files present)
 **Model**: `models/behavior_classifier.onnx` — BehaviorClassifierCNN (20,550 params, trained 13 epochs on 1,000 synthetic samples, early stopping at patience=12)

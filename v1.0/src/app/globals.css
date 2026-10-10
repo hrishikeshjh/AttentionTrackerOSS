@@ -1,6 +1,168 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss' source(none);
+
+/* Same content globs as the former tailwind.config.ts (v3 `content`). */
+@source '../pages/**/*.{js,ts,jsx,tsx,mdx}';
+@source '../components/**/*.{js,ts,jsx,tsx,mdx}';
+@source '../app/**/*.{js,ts,jsx,tsx,mdx}';
+
+@plugin 'tailwindcss-animate';
+
+@custom-variant dark (&:is(.dark *));
+
+@utility container {
+  margin-inline: auto;
+  padding-inline: 2rem;
+  @media (width >= --theme(--breakpoint-sm)) {
+    max-width: none;
+  }
+  @media (width >= 1400px) {
+    max-width: 1400px;
+  }
+}
+
+/*
+  `inline` so utilities embed the value (as v3 did) instead of referencing a
+  :root variable: --font-inter is defined on <body> by next/font, so a :root
+  --font-sans: var(--font-inter) would resolve to nothing.
+*/
+@theme inline {
+  --font-sans: var(--font-inter), sans-serif;
+  --font-headline: var(--font-inter), sans-serif;
+  --font-body: var(--font-inter), sans-serif;
+
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+}
+
+/*
+  Tailwind v3 parity. Keeps the production styles identical to the v3 build:
+  - the v3 default-palette values for the palette colours the app uses (v4
+    moved the default palette to OKLCH, which shifts these hues slightly);
+  - v3 preflight behaviour that v4 changed: default border and ring colours,
+    the root font stack, pointer cursor on buttons, placeholder colour, and UA
+    backgrounds/radii on native form controls (v4 makes them
+    transparent/square).
+*/
+@theme {
+  --color-red-50: #fef2f2;
+  --color-red-300: #fca5a5;
+  --color-red-400: #f87171;
+  --color-red-500: #ef4444;
+  --color-red-600: #dc2626;
+  --color-yellow-400: #facc15;
+  --color-yellow-500: #eab308;
+  --color-green-500: #22c55e;
+}
+
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: #e5e7eb;
+    --tw-ring-color: rgb(59 130 246 / 0.5);
+  }
+  html,
+  :host {
+    font-family: var(--font-inter), sans-serif;
+  }
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+  :disabled {
+    cursor: default;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    opacity: 1;
+    color: #9ca3af;
+  }
+  input:where(:not([type='button'], [type='reset'], [type='submit'])),
+  select,
+  optgroup,
+  textarea,
+  ::file-selector-button {
+    background-color: revert;
+    border-radius: revert;
+  }
+  ::file-selector-button {
+    color: revert;
+    border: revert;
+    padding: revert;
+    margin: revert;
+  }
+  td,
+  th {
+    padding: 1px; /* Chrome's table cellpadding default; `revert` skips it */
+  }
+  option {
+    padding: revert;
+  }
+  dialog {
+    margin: revert;
+  }
+  [type='search'] {
+    -webkit-appearance: textfield;
+    outline-offset: -2px;
+  }
+}
 
 @layer base {
   :root {

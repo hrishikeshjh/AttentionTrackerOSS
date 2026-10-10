@@ -150,42 +150,53 @@ function detectFatigueOnset(data: SessionDataPoint[]): number | null {
 
 // ==================== ANOMALY DETECTION ====================
 
-interface AnomalyResult {
-    blinkAnomalies: number;
-    anomalyTimestamps: number[];
+/** Drop between consecutive points (score units) counted as a sharp drop. */
+const SCORE_DROP_THRESHOLD = 30;
+
+/**
+ * Anomalies in the attention-score series. Nothing here looks at blinks:
+ * the SessionAnalytics field `blinkAnomalies` has always held
+ * `scoreDropCount` (it is kept under its old name only because the legacy
+ * golden fixture freezes analyze()'s output); use getAnomalies() instead.
+ */
+export interface AnomalyResult {
+    /** consecutive-point drops larger than SCORE_DROP_THRESHOLD */
+    scoreDropCount: number;
+    /** timestamp of the point at the bottom of each sharp drop */
+    scoreDropTimestamps: number[];
+    /** points whose |z-score| exceeds ANOMALY_STD_THRESHOLD */
+    outlierTimestamps: number[];
 }
 
 /**
- * Detect anomalies in session data
+ * Detect anomalies in session data (needs >= 10 points).
  */
 function detectAnomalies(data: SessionDataPoint[]): AnomalyResult {
     if (data.length < 10) {
-        return { blinkAnomalies: 0, anomalyTimestamps: [] };
+        return { scoreDropCount: 0, scoreDropTimestamps: [], outlierTimestamps: [] };
     }
 
     const scores = data.map(d => d.attentionScore);
     const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
     const stdDev = calculateStdDev(scores);
 
-    const anomalyTimestamps: number[] = [];
-
+    const outlierTimestamps: number[] = [];
     for (const point of data) {
         const zScore = Math.abs(point.attentionScore - mean) / (stdDev || 1);
         if (zScore > ANOMALY_STD_THRESHOLD) {
-            anomalyTimestamps.push(point.timestamp);
+            outlierTimestamps.push(point.timestamp);
         }
     }
 
-    // Count significant drops as blink anomalies
-    let blinkAnomalies = 0;
+    const scoreDropTimestamps: number[] = [];
     for (let i = 1; i < data.length; i++) {
         const drop = data[i - 1].attentionScore - data[i].attentionScore;
-        if (drop > 30) {
-            blinkAnomalies++;
+        if (drop > SCORE_DROP_THRESHOLD) {
+            scoreDropTimestamps.push(data[i].timestamp);
         }
     }
 
-    return { blinkAnomalies, anomalyTimestamps };
+    return { scoreDropCount: scoreDropTimestamps.length, scoreDropTimestamps, outlierTimestamps };
 }
 
 // ==================== OPTIMAL WINDOW DETECTION ====================
@@ -242,7 +253,13 @@ export class SessionAnalyticsEngine {
      * Calculate comprehensive session analytics
      */
     analyze(): SessionAnalytics {
-        if (this.data.length < 5) {
+        // DACE: "Unsure" points hold the score and are excluded from every
+        // statistic (average, trend, periods, fatigue onset). unsureShare is
+        // reported only when the data carries DACE flags, so legacy sessions
+        // produce exactly the same object as before.
+        const data = this.scoredData();
+        const extra = this.unsureShareField();
+        if (data.length < 5) {
             return {
                 attentionTrend: 'stable',
                 trendSlope: 0,
@@ -252,11 +269,12 @@ export class SessionAnalyticsEngine {
                 fatigueOnset: null,
                 optimalEngagementWindow: null,
                 attentionVariability: 0,
+                ...extra,
             };
         }
 
         // Calculate trend
-        const recentData = this.data.slice(-TREND_WINDOW_SIZE);
+        const recentData = data.slice(-TREND_WINDOW_SIZE);
         const trendPoints = recentData.map((d, i) => ({ x: i, y: d.attentionScore }));
         const { slope, rSquared } = linearRegression(trendPoints);
 
@@ -268,20 +286,20 @@ export class SessionAnalyticsEngine {
         }
 
         // Find periods
-        const peakAttentionPeriods = findPeriods(this.data, PERIOD_THRESHOLD_HIGH, true);
-        const lowAttentionPeriods = findPeriods(this.data, PERIOD_THRESHOLD_LOW, false);
+        const peakAttentionPeriods = findPeriods(data, PERIOD_THRESHOLD_HIGH, true);
+        const lowAttentionPeriods = findPeriods(data, PERIOD_THRESHOLD_LOW, false);
 
         // Detect fatigue
-        const fatigueOnset = detectFatigueOnset(this.data);
+        const fatigueOnset = detectFatigueOnset(data);
 
-        // Detect anomalies
-        const { blinkAnomalies } = detectAnomalies(this.data);
+        // Score anomalies (stored under the historical field name, see AnomalyResult)
+        const { scoreDropCount } = detectAnomalies(data);
 
         // Find optimal window
-        const optimalEngagementWindow = findOptimalWindow(this.data);
+        const optimalEngagementWindow = findOptimalWindow(data);
 
         // Calculate variability
-        const scores = this.data.map(d => d.attentionScore);
+        const scores = data.map(d => d.attentionScore);
         const attentionVariability = calculateStdDev(scores);
 
         return {
@@ -289,22 +307,44 @@ export class SessionAnalyticsEngine {
             trendSlope: slope,
             peakAttentionPeriods,
             lowAttentionPeriods,
-            blinkAnomalies,
+            blinkAnomalies: scoreDropCount,
             fatigueOnset,
             optimalEngagementWindow,
             attentionVariability,
+            ...extra,
         };
+    }
+
+    /**
+     * Score anomalies with their timestamps (sharp drops and z-score
+     * outliers), over the scored points (DACE "Unsure" points excluded).
+     */
+    getAnomalies(): AnomalyResult {
+        return detectAnomalies(this.scoredData());
+    }
+
+    /** Points that carry a score (DACE "Unsure" points removed). */
+    private scoredData(): SessionDataPoint[] {
+        return this.data.filter(d => !d.unsure);
+    }
+
+    /** { unsureShare } when any point carries the DACE `unsure` flag, else {}. */
+    private unsureShareField(): { unsureShare?: number } {
+        if (!this.data.some(d => d.unsure !== undefined)) return {};
+        const n = this.data.filter(d => d.unsure).length;
+        return { unsureShare: this.data.length > 0 ? n / this.data.length : 0 };
     }
 
     /**
      * Get real-time trend (last 10 data points)
      */
     getRealtimeTrend(): { trend: 'up' | 'down' | 'stable'; strength: number } {
-        if (this.data.length < 5) {
+        const data = this.scoredData();
+        if (data.length < 5) {
             return { trend: 'stable', strength: 0 };
         }
 
-        const recentData = this.data.slice(-10);
+        const recentData = data.slice(-10);
         const points = recentData.map((d, i) => ({ x: i, y: d.attentionScore }));
         const { slope, rSquared } = linearRegression(points);
 
@@ -329,7 +369,8 @@ export class SessionAnalyticsEngine {
         scoreRange: number;
         stateBreakdown: Record<string, number>;
     } {
-        if (this.data.length === 0) {
+        const data = this.scoredData();
+        if (data.length === 0) {
             return {
                 totalDataPoints: 0,
                 averageScore: 0,
@@ -340,18 +381,18 @@ export class SessionAnalyticsEngine {
             };
         }
 
-        const scores = this.data.map(d => d.attentionScore);
+        const scores = data.map(d => d.attentionScore);
         const averageScore = scores.reduce((a, b) => a + b, 0) / scores.length;
         const minScore = Math.min(...scores);
         const maxScore = Math.max(...scores);
 
         const stateBreakdown: Record<string, number> = {};
-        for (const point of this.data) {
+        for (const point of data) {
             stateBreakdown[point.attentionState] = (stateBreakdown[point.attentionState] || 0) + 1;
         }
 
         return {
-            totalDataPoints: this.data.length,
+            totalDataPoints: data.length,
             averageScore: Math.round(averageScore),
             minScore,
             maxScore,

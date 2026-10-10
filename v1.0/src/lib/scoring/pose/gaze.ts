@@ -13,6 +13,15 @@ export type GazeDirection = { gazeX: number | null; gazeY: number | null };
  * silently folded in here. This unifies what was previously two diverged
  * copies (web app used a 2x multiplier, the Chrome extension used 3x) into
  * one canonical formula.
+ *
+ * KNOWN DEFECT (kept deliberately, frozen by the legacy golden fixture):
+ * because the "iris" here is the eyelid centroid, gazeY stays near 0 for
+ * genuine eye movements and its sign (+up, from eyelid geometry) is not a
+ * measurement of where the eyes point. Do not build "looking down" logic on
+ * it. The corrected measurement exists behind the existing config flag:
+ * `measurement=mediapipe` uses eye blendshapes with an iris cross-check
+ * (scoring/dace/gaze-blendshape.ts, ARCHITECTURE.md §11.8); with
+ * `measurement=pnp68` the legacy gaze is passed through unchanged (pose only).
  */
 export const calculateGazeDirection = (landmarks: Point2D[]): GazeDirection => {
   if (!landmarks || landmarks.length < 68) return { gazeX: null, gazeY: null };

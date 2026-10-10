@@ -9,7 +9,7 @@ import {
   calculateEyebrowRaise,
   calculateMouthOpenness,
 } from './basic-metrics';
-import { BlinkDetector, HeadPoseTracker, FatigueCalculator } from './trackers';
+import { BlinkDetector, HeadPoseTracker, FatigueCalculator, type BlinkClock } from './trackers';
 import { HandTracker } from '../hand-tracker';
 import type {
   ExtendedFaceMetrics,
@@ -47,8 +47,20 @@ export class HandObjectProximityDetector {
   }
 }
 
+export type FaceMetricsAggregatorOptions = {
+  /** blink-rate clock (default 'wall' = historical Date.now(); see trackers.ts BlinkClock) */
+  blinkClock?: BlinkClock;
+};
+
 export class FaceMetricsAggregator {
-  private blinkDetector = new BlinkDetector();
+  private readonly blinkClock: BlinkClock;
+  private blinkDetector: BlinkDetector;
+
+  constructor(options: FaceMetricsAggregatorOptions = {}) {
+    this.blinkClock = options.blinkClock ?? 'wall';
+    this.blinkDetector = new BlinkDetector(this.blinkClock);
+  }
+
   private headPoseTracker = new HeadPoseTracker();
   private fatigueCalculator = new FatigueCalculator();
   private marHistory: number[] = [];
@@ -108,7 +120,7 @@ export class FaceMetricsAggregator {
   }
 
   reset(): void {
-    this.blinkDetector = new BlinkDetector();
+    this.blinkDetector = new BlinkDetector(this.blinkClock);
     this.headPoseTracker = new HeadPoseTracker();
     this.fatigueCalculator = new FatigueCalculator();
     this.marHistory = [];

@@ -24,6 +24,31 @@ export type HeadPose = { yaw: number | null; pitch: number | null; roll: number 
  * true degrees — this is a known limitation. A future solvePnP-based upgrade
  * would replace HEAD_POSE_CALIBRATION with a real camera-intrinsics-derived
  * projection.
+ *
+ * KNOWN DEFECT - SIGN AND OFFSET OF `pitch` (kept deliberately, do not "fix" here):
+ * there is no neutral offset, so a screen-facing head already reads about
+ * +13..+18 (the nose tip sits below the eye corners) and tilting the head
+ * DOWN makes pitch MORE positive. Every `pitch < -15` "looking down" branch
+ * (ml-engine.ts computeContextAwarePitch/computeObjectContext,
+ * temporal-classifier.ts rules, extension/lib/ml-core.js, v2.0
+ * features/face_metrics.py) is therefore effectively unreachable on real
+ * faces. This formula is frozen because the DACE-off path must stay
+ * byte-identical (src/lib/__tests__/legacy-equivalence.test.ts and
+ * scoring/__tests__/pitch-characterisation.test.ts, which documents the
+ * defect numerically).
+ *
+ * The corrected, legacy-compatible measurement already exists behind the
+ * existing config flag and is NOT duplicated here:
+ *   - `measurement=pnp68` (preset A''/A2): solvePnP on these same 68 points,
+ *     src/lib/dace/measurement/pnp68.ts + scoring/dace/solvepnp.ts, degrees
+ *     with +down; DACE substitutes the NEGATED value into the legacy `pitch`
+ *     field (ARCHITECTURE.md §11.8, plan D7) so existing `pitch < -15`
+ *     consumers see correct values;
+ *   - `measurement=mediapipe` (preset B and later): matrix-based pose
+ *     (scoring/dace/head-pose-matrix.ts) relative to a 5 s screen-facing
+ *     reference (pitch-reference.ts).
+ * Select either with NEXT_PUBLIC_DACE_PRESET / NEXT_PUBLIC_DACE_MEASUREMENT
+ * (src/lib/dace/config.ts).
  */
 export const calculateHeadPose = (landmarks: Point2D[]): HeadPose => {
   if (!landmarks || landmarks.length < 68) return { yaw: null, pitch: null, roll: null };

@@ -29,10 +29,12 @@ Output (ClassroomDataset's expected schema):
         {
           "clip_id": "...", "fps": 5,
           "persons": [
-            {"track_id": 0, "seat_id": "seat_1",
-             "frames": [{"frame_idx": 0, "bbox_xyxy": [...], "behavior": "..."}]}
-          ]
+            {"track_id": 0, "seat_id": "seat_1", "subject_id": "s17" (if annotated),
+             "frames": [{"frame_idx": 0, "bbox_xyxy": [...], "behavior": "..." | null}]}
+          ],
+          "n_frames": 150      (from <meta><task><size>, when present)
         }
+    Boxes with outside="1" are dropped (the track has left the frame).
     <out_dir>/metadata.csv row appended: clip_id,split,duration_sec,num_persons
 
 Usage:
@@ -49,7 +51,11 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-DEFAULT_BEHAVIOR = "distracted"  # matches classroom_loader.py's fallback
+# A box without a behavior attribute has NO behavior label (None): it still
+# counts for tracking / occupancy ground truth, and ClassroomDataset leaves it
+# out of the behavior sequences. (It used to default to "distracted", which
+# invented a label for every unlabelled box.)
+DEFAULT_BEHAVIOR = None
 
 
 def _box_attributes(box_el: ET.Element) -> dict[str, str]:
@@ -74,8 +80,13 @@ def convert_cvat_xml(xml_path: str | Path) -> dict:
         track_id = int(track_el.get("id", "0"))
         frames = []
         seat_id = None
+        subject_id = None
 
         for box_el in track_el.findall("box"):
+            # CVAT keeps a box with outside="1" where the track has LEFT the
+            # frame; it is not a person in that frame.
+            if box_el.get("outside", "0") == "1":
+                continue
             frame_idx = int(box_el.get("frame", "0"))
             xtl = float(box_el.get("xtl", "0"))
             ytl = float(box_el.get("ytl", "0"))
@@ -86,6 +97,8 @@ def convert_cvat_xml(xml_path: str | Path) -> dict:
             behavior = attrs.get("behavior", DEFAULT_BEHAVIOR)
             if seat_id is None and "seat_id" in attrs:
                 seat_id = attrs["seat_id"]
+            if subject_id is None and attrs.get("subject_id"):
+                subject_id = attrs["subject_id"]
 
             frames.append({
                 "frame_idx": frame_idx,
@@ -93,13 +106,24 @@ def convert_cvat_xml(xml_path: str | Path) -> dict:
                 "behavior": behavior,
             })
 
-        persons.append({
+        person = {
             "track_id": track_id,
             "seat_id": seat_id,
             "frames": frames,
-        })
+        }
+        if subject_id is not None:
+            # same student across clips -> ClassroomDataset's leakage group
+            person["subject_id"] = subject_id
+        persons.append(person)
 
-    return {"persons": persons}
+    size_el = root.find("./meta/task/size")
+    out: dict = {"persons": persons}
+    if size_el is not None and size_el.text:
+        # every frame 0..n_frames-1 is annotated (CVAT video export), incl.
+        # frames with nobody in them -- the tracking / occupancy evaluation
+        # scores false positives on those too.
+        out["n_frames"] = int(size_el.text)
+    return out
 
 
 def _clip_duration_sec(xml_path: str | Path, fps: float) -> float:

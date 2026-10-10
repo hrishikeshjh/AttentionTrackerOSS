@@ -1,5 +1,7 @@
 # CognEn - Technical Architecture & ML Logic
 
+> **Status note.** This file describes the legacy scoring path (DACE off) of the v1.0 web app and has been corrected to match `src/lib/scoring/constants.ts`. Authoritative sources: `src/lib/scoring/` (code), `ARCHITECTURE.md` (design; DACE in §11) and `v1.0/README.md`. Corrected here: EMA alpha 0.15 (web app and Chrome extension; the extension was rewritten to match), attention thresholds 70/40, head-pose gains/normalizer, legacy feature weights, and gaze (eyelid-based, not iris-based). Known defect: the legacy pitch value has no neutral offset and rises (not falls) when the head tilts down, so pitch-based "looking down" logic is unreliable; the opt-in DACE mode (README §24) addresses this. Nothing in DACE has been browser-tested.
+
 ## Overview
 
 CognEn (Cognitive Engagement) uses computer vision and machine learning to analyze facial features in real-time and compute an **attention score** from 0-100. This document details the mathematical and ML foundations.
@@ -12,7 +14,7 @@ CognEn (Cognitive Engagement) uses computer vision and machine learning to analy
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Input Pipeline                           │
 ├─────────────────────────────────────────────────────────────────┤
-│  Webcam Feed (640×480 @ 5 FPS)                                  │
+│  Webcam Feed (640×480; fixed 200 ms ticks, prediction recorded at 1 Hz)  │
 │         ↓                                                        │
 │  face-api.js TinyFaceDetector                                   │
 │         ↓                                                        │
@@ -34,9 +36,9 @@ CognEn (Cognitive Engagement) uses computer vision and machine learning to analy
 │                      ML Engine                                   │
 ├─────────────────────────────────────────────────────────────────┤
 │  1. Normalize each feature to 0-100 score                       │
-│  2. Apply weighted combination (12 features)                    │
-│  3. Temporal smoothing via EMA (α = 0.25)                       │
-│  4. Classify: Attentive (≥75) | Distracted (45-74) | Low (<45) │
+│  2. Apply weighted combination (13 legacy features; 16 in the upgraded weight table)                    │
+│  3. Temporal smoothing via EMA (α = 0.15 web app)                       │
+│  4. Classify: Attentive (≥70) | Distracted (40-69) | Multitasking (<40) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -99,20 +101,20 @@ MAR = ||top_lip - bottom_lip|| / ||left_corner - right_corner||
 Computed from facial landmark geometry without 3D model.
 
 ```
-Yaw   = ((nose.x - eye_midpoint.x) / eye_distance) × 60°
-Pitch = ((nose.y - eye_midpoint.y) / nose_chin_distance) × 60°
+Yaw   = ((nose.x - eye_midpoint.x) / eye_distance) × 50      (YAW_GAIN)
+Pitch = ((nose.y - eye_midpoint.y) / eye_distance) × 33.3    (PITCH_GAIN; same interocular normalizer; not true degrees, no neutral offset)
 Roll  = atan2(right_eye.y - left_eye.y, right_eye.x - left_eye.x)
 ```
 
 **Stability Score**: Variance of pose over 30 seconds.
 
 ```
-Stability = 100 - (σ²_yaw + σ²_pitch + 0.5×σ²_roll) / 5
+Stability = 100 - (σ²_yaw + σ²_pitch + 0.5×σ²_roll) / 2.5 / 10
 ```
 
 ### 5. Gaze Direction
 
-Estimates where the user is looking based on iris position within eye.
+Approximates where the user is looking from eyelid landmarks (the 68-point model has no iris points, so this is not true iris gaze; DACE mode uses MediaPipe blendshape gaze instead).
 
 ```
 Gaze_X = (iris_center.x - eye_center.x) / eye_width × 2
@@ -173,19 +175,21 @@ Each feature is normalized to a 0-100 score, then combined with weights.
 
 | Feature | Weight | Rationale |
 |---------|--------|-----------|
-| Gaze Deviation | 0.18 | Primary attention indicator |
-| Yaw Deviation | 0.12 | Looking left/right |
+| EAR | 0.15 | Eye openness |
+| PERCLOS | 0.12 | Drowsiness |
 | Head Pose Stability | 0.12 | Overall engagement |
-| EAR | 0.12 | Eye openness |
-| PERCLOS | 0.10 | Drowsiness |
-| Pitch Deviation | 0.08 | Looking up/down |
-| Fatigue Index | 0.08 | Accumulated fatigue |
-| Blink Rate | 0.06 | Eye strain indicator |
-| Fidget Score | 0.05 | Restlessness |
-| Face Presence | 0.03 | Face in frame |
-| Face Distance | 0.02 | Proximity to camera |
-| Mouth Openness | 0.02 | Yawning detection |
-| Eyebrow Raise | 0.02 | Surprise/confusion |
+| Gaze Deviation | 0.10 | Primary attention indicator |
+| Fatigue Index | 0.10 | Accumulated fatigue |
+| Blink Rate | 0.08 | Eye strain indicator |
+| Yaw Deviation | 0.08 | Looking left/right |
+| Fidget Score | 0.07 | Restlessness |
+| Pitch Deviation | 0.06 | Looking up/down |
+| Eyebrow Raise | 0.04 | Surprise/confusion |
+| Mouth Openness | 0.03 | Yawning detection |
+| Face Distance | 0.03 | Proximity to camera |
+| Face Presence | 0.02 | Face in frame |
+
+These are `FEATURE_WEIGHTS_LEGACY`. When object detection data is present the engine uses `FEATURE_WEIGHTS_V1_UPGRADED` (adds contextAwarePitch, objectContext, handObjectProximity, temporalPattern; see v1.0/README.md §4.2). The score is the weighted mean times a quality factor.
 
 ### Score Calculation
 
@@ -206,7 +210,7 @@ To reduce jitter, scores pass through an Exponential Moving Average:
 smoothed_score = α × raw_score + (1 - α) × prev_smoothed_score
 ```
 
-With **α = 0.25**, the system responds to changes within 1-2 seconds while filtering noise.
+With **α = 0.15** (web app and extension), the system responds to changes within 1-2 seconds while filtering noise.
 
 ---
 
@@ -214,53 +218,50 @@ With **α = 0.25**, the system responds to changes within 1-2 seconds while filt
 
 | Score Range | State | Description |
 |-------------|-------|-------------|
-| 75-100 | **Attentive** | Focused, looking at screen, stable head position |
-| 45-74 | **Distracted** | Occasional glances away, some movement |
-| 0-44 | **Multitasking** | Looking away, excessive movement, or no face |
+| 70-100 | **Attentive** | Focused, looking at screen, stable head position |
+| 40-69 | **Distracted** | Occasional glances away, some movement |
+| 0-39 | **Multitasking** | Looking away, excessive movement, or no face |
 
 ---
 
 ## Extension Architecture
 
+Details: `extension/README.md`. Unit-tested only (`extension-equivalence.test.ts`); never loaded in Chrome.
+
 ### Component Flow
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Popup.js      │────▶│  Background.js  │────▶│  Content.js     │
-│   (UI)          │     │  (Coordinator)  │     │  (Meet Inject)  │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                                         │
-                        ┌─────────────────┐              │
-                        │  Offscreen.js   │◀─────────────┘
-                        │  (Standalone)   │   (or inject into Meet)
-                        └─────────────────┘
-                                 │
-                        ┌─────────────────┐
-                        │  ml-core.js     │
-                        │  (ML Engine)    │
-                        └─────────────────┘
+Popup.js (UI) ──▶ Background.js (service worker: session record, badge, alarms, notifications)
+                      │
+         ┌────────────┴─────────────────────────────┐
+         ▼ standalone                               ▼ Meet / Zoom / Teams
+   Offscreen.js (own camera,                  Content.js (MAIN world, analyser + widget)
+   200 ms setTimeout loop)                          │ HMAC-signed postMessage
+         │                                          ▼
+         └──── both use lib/ml-core.js        Bridge.js (ISOLATED world: verify MAC,
+               (legacy-path port)                    replay check) ──▶ chrome.runtime ──▶ Background.js
 ```
 
 ### Data Flow
 
-1. **Detection**: face-api.js extracts 68 facial landmarks
-2. **Metrics**: `FaceMetricsAggregator` computes all features
-3. **Prediction**: `MLEngine` produces attention score and state
-4. **Storage**: Results written to localStorage (Meet mode) or chrome.storage
-5. **Display**: Widget on page + popup UI read from storage
+1. **Detection**: face-api.js extracts 68 facial landmarks (200 ms tick)
+2. **Metrics**: the `ml-core.js` aggregator computes all features
+3. **Prediction**: the `ml-core.js` engine (legacy weights, EMA 0.15, thresholds 70/40) produces score and state once per second
+4. **Storage**: the background owns the session record (`chrome.storage.session`, falling back to `local`); the page-`localStorage` channel no longer exists
+5. **Display**: the in-page widget (call mode) and the popup read from the background
 
 ### Dual Mode Operation
 
 | Mode | When | How |
 |------|------|-----|
-| **Meet Mode** | On Google Meet tab | Injects into page, reads existing video element |
-| **Standalone Mode** | Not on Meet | Uses offscreen document with own camera access |
+| **Meet / Zoom / Teams mode** | On a supported call tab | Injects the analyser into the page and analyses the self-view `<video>` (live local-capture track, else mirrored element, else largest) |
+| **Standalone Mode** | Any other tab | Uses an offscreen document with its own camera access |
 
 ---
 
 ## Performance Considerations
 
-- **Frame Rate**: 5 FPS target (~200ms intervals)
+- **Frame Rate**: web app (legacy and DACE) and extension all tick every 200 ms (5 FPS design rate, not measured) and record a prediction once per second
 - **Detection Model**: TinyFaceDetector (320px input, ~150ms inference)
 - **Memory**: ~50MB for face-api models
 - **CPU Usage**: ~15-25% on modern hardware
@@ -272,7 +273,7 @@ With **α = 0.25**, the system responds to changes within 1-2 seconds while filt
 1. **Lighting**: Poor lighting reduces landmark accuracy
 2. **Angle**: Extreme head angles (>40°) lose tracking
 3. **Glasses**: Reflective glasses may affect gaze estimation
-4. **Multiple Faces**: Only first detected face is tracked
+4. **Multiple Faces**: the web app tracks one primary face chosen by `PrimaryFaceSelector` (largest/most centered, with hysteresis); the extension uses the same `PrimaryFaceSelector` hysteresis (ported)
 5. **Camera Quality**: Low-res cameras reduce accuracy
 
 ---

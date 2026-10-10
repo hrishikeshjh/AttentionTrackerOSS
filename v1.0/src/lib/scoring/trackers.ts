@@ -8,7 +8,19 @@ import {
 } from './constants';
 import type { HeadPose } from './pose/head-pose';
 
+/**
+ * Clock used for the blink-rate window.
+ *   'wall'  (default): Date.now() at call time - the historical behaviour,
+ *           frozen by the legacy golden fixture (which pins Date.now() to the
+ *           frame timestamp with fake timers).
+ *   'frame': the timestamp passed to detectBlink(), so offline replay or a
+ *           delayed frame gives the same rate as live capture.
+ */
+export type BlinkClock = 'wall' | 'frame';
+
 export class BlinkDetector {
+  constructor(private readonly clock: BlinkClock = 'wall') {}
+
   private earHistory: Array<{ time: number; ear: number }> = [];
   private blinkEvents: number[] = [];
   private wasEyeClosed = false;
@@ -17,7 +29,7 @@ export class BlinkDetector {
 
   detectBlink(ear: number | null, timestamp: number): { blinkDetected: boolean; blinkRate: number; perclos: number } {
     if (ear === null) {
-      return { blinkDetected: false, blinkRate: this.getBlinkRate(), perclos: this.getPERCLOS(timestamp) };
+      return { blinkDetected: false, blinkRate: this.rateAt(timestamp), perclos: this.getPERCLOS(timestamp) };
     }
 
     this.earHistory.push({ time: timestamp, ear });
@@ -47,12 +59,19 @@ export class BlinkDetector {
 
     this.wasEyeClosed = isEyeClosed;
 
-    return { blinkDetected, blinkRate: this.getBlinkRate(), perclos: this.getPERCLOS(timestamp) };
+    return { blinkDetected, blinkRate: this.rateAt(timestamp), perclos: this.getPERCLOS(timestamp) };
   }
 
-  private getBlinkRate(): number {
+  private rateAt(frameTimestamp: number): number {
+    return this.getBlinkRate(this.clock === 'frame' ? frameTimestamp : undefined);
+  }
+
+  /**
+   * Blinks per minute over the last 60 s.
+   * @param now reference time in ms; defaults to Date.now() (historical behaviour)
+   */
+  getBlinkRate(now: number = Date.now()): number {
     if (this.blinkEvents.length < 2) return 0;
-    const now = Date.now();
     const oneMinuteAgo = now - 60000;
     const recentBlinks = this.blinkEvents.filter((t) => t > oneMinuteAgo);
     const timeSpan = Math.min(60000, now - this.blinkEvents[0]);
@@ -85,13 +104,13 @@ export class BlinkDetector {
  * landmark noise) inflated fidget score identically to genuine rapid head
  * movement. Smoothing first (alpha=0.4, fast enough to track real motion,
  * slow enough to reject single-frame jitter) fixes this without adding a
- * separate dependency (e.g. Savitzky-Golay).
+ * separate dependency (e.g. Savitzky-Golay). The smoothed series is
+ * re-derived over the retained window in getFidgetScore(); no running
+ * smoothed state is kept (the former smoothedYaw/Pitch/Roll fields were
+ * written but never read and have been removed).
  */
 export class HeadPoseTracker {
   private poseHistory: Array<{ time: number; yaw: number; pitch: number; roll: number }> = [];
-  private smoothedYaw: number | null = null;
-  private smoothedPitch: number | null = null;
-  private smoothedRoll: number | null = null;
   private static readonly FIDGET_SMOOTHING_ALPHA = 0.4;
 
   addPose(pose: HeadPose, timestamp: number): void {
@@ -99,11 +118,6 @@ export class HeadPoseTracker {
       this.poseHistory.push({ time: timestamp, yaw: pose.yaw, pitch: pose.pitch, roll: pose.roll });
       const cutoff = timestamp - 30000;
       this.poseHistory = this.poseHistory.filter((p) => p.time > cutoff);
-
-      const a = HeadPoseTracker.FIDGET_SMOOTHING_ALPHA;
-      this.smoothedYaw = this.smoothedYaw === null ? pose.yaw : a * pose.yaw + (1 - a) * this.smoothedYaw;
-      this.smoothedPitch = this.smoothedPitch === null ? pose.pitch : a * pose.pitch + (1 - a) * this.smoothedPitch;
-      this.smoothedRoll = this.smoothedRoll === null ? pose.roll : a * pose.roll + (1 - a) * this.smoothedRoll;
     }
   }
 

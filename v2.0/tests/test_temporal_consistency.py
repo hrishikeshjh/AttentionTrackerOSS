@@ -62,10 +62,28 @@ def test_correctly_following_a_real_transition_is_not_penalized():
     assert ev.temporal_consistency() == 1.0
 
 
-def test_no_tracked_sequences_returns_vacuous_1():
+def test_no_tracked_sequences_is_not_measured():
+    """No person id -> nothing to measure: NaN / None + 'insufficient_data',
+    and the target is NOT met (None). It used to be a vacuous 1.0 that
+    evaluate.py counted as a met target."""
+    import math
     ev = BehaviorEvaluator()
     ev.update(y_pred=0, y_true=0)  # no person_id -> not tracked for TCC
-    assert ev.temporal_consistency() == 1.0
+    assert math.isnan(ev.temporal_consistency())
+    m = ev.compute()
+    assert m["temporal_consistency"] is None
+    assert m["temporal_consistency_status"].startswith("insufficient_data")
+    assert m["targets_met"]["temporal_consistency"] is None
+
+
+def test_only_gt_transitions_is_not_measured():
+    """Every consecutive pair is a GT change -> no stable transition."""
+    import math
+    ev = BehaviorEvaluator()
+    for i in range(6):
+        ev.update(y_pred=i % 2, y_true=i % 2, person_id="p")
+    assert math.isnan(ev.temporal_consistency())
+    assert ev.n_stable_transitions() == 0
 
 
 def test_multiple_persons_are_averaged():

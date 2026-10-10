@@ -18,7 +18,23 @@ import { cn } from '@/lib/utils';
 
 interface ModelDataCardProps {
   faceMetrics: ExtendedFaceMetrics | null;
+  /** DACE: which measurement provider produced the values */
+  measurementLabel?: string;
 }
+
+const fmt = (v: number | null | undefined, digits = 1, unit = '') =>
+  v === null || v === undefined || Number.isNaN(v) ? 'N/A' : `${v.toFixed(digits)}${unit}`;
+
+const Flag = ({ label, on }: { label: string; on: boolean }) => (
+  <span
+    className={cn(
+      'rounded px-1.5 py-0.5 text-[10px] font-medium',
+      on ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
+    )}
+  >
+    {label}
+  </span>
+);
 
 type MetricStatus = 'good' | 'warning' | 'danger' | 'neutral';
 
@@ -101,7 +117,9 @@ const MetricSection = ({ title, children }: { title: string; children: React.Rea
   </div>
 );
 
-export default function ModelDataCard({ faceMetrics }: ModelDataCardProps) {
+export default function ModelDataCard({ faceMetrics, measurementLabel }: ModelDataCardProps) {
+  const dace = faceMetrics?.dace;
+  const desk = faceMetrics?.deskEvidence;
   // Calculate derived values
   const earStatus = getStatus(faceMetrics?.ear ?? null, 'higher', { good: 0.25, warning: 0.2 });
   const perclosStatus = getStatus(faceMetrics?.perclos ?? null, 'lower', { good: 15, warning: 25 });
@@ -113,9 +131,66 @@ export default function ModelDataCard({ faceMetrics }: ModelDataCardProps) {
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-lg">Live Model Data</CardTitle>
-        <CardDescription>Real-time biometric metrics from facial analysis.</CardDescription>
+        <CardDescription>
+          Real-time biometric metrics from facial analysis.
+          {measurementLabel ? <span className="block text-xs">Measurement: {measurementLabel}</span> : null}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {dace && (
+          <MetricSection title="DACE measurement (degrees, + = head down)">
+            <div className="grid grid-cols-4 gap-2 text-xs">
+              <div className="text-center">
+                <div className="text-muted-foreground">Pitch</div>
+                <div className="font-mono font-medium">{fmt(dace.pitchDeg, 1, '°')}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-muted-foreground">Δ pitch</div>
+                <div className="font-mono font-medium">{fmt(dace.relPitchDeg, 1, '°')}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-muted-foreground">Yaw</div>
+                <div className="font-mono font-medium">{fmt(dace.yawDeg, 1, '°')}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-muted-foreground">Roll</div>
+                <div className="font-mono font-medium">{fmt(dace.rollDeg, 1, '°')}</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <MetricRow label="Eye gaze vertical (+down)" value={dace.gazeV} icon={<Target className="h-4 w-4" />} />
+              <MetricRow label="Eye gaze horizontal" value={dace.gazeH} icon={<Target className="h-4 w-4" />} />
+              <MetricRow
+                label="Residual openness"
+                value={dace.residualOpenness}
+                icon={<Eye className="h-4 w-4" />}
+                status={dace.residualOpenness === null ? 'neutral' : dace.residualOpenness >= 0.7 ? 'good' : 'danger'}
+              />
+              <MetricRow
+                label="Corrected PERCLOS"
+                value={dace.correctedPerclos === null ? null : dace.correctedPerclos * 100}
+                unit="%"
+                icon={<Clock className="h-4 w-4" />}
+                status={dace.correctedPerclos === null ? 'neutral' : dace.correctedPerclos < 0.15 ? 'good' : 'danger'}
+              />
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <Flag label="looking down" on={dace.lookingDown} />
+              <Flag label={dace.gazeValid ? 'iris gaze valid' : 'gaze: head pitch only'} on={dace.gazeValid} />
+              {dace.calibrating && <Flag label="calibrating" on />}
+              {desk && (
+                <>
+                  <Flag label="phone in use" on={desk.phoneInUse} />
+                  <Flag label="phone present" on={desk.phonePresent} />
+                  <Flag label="book" on={desk.book} />
+                  <Flag label="writing" on={desk.writing} />
+                  <Flag label="desk visible" on={desk.deskVisible} />
+                  {desk.conflict && <Flag label="conflict" on />}
+                </>
+              )}
+            </div>
+          </MetricSection>
+        )}
         {/* Eye Metrics */}
         <MetricSection title="Eye Analysis">
           <MetricRow

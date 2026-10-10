@@ -1,7 +1,24 @@
 /**
- * CognEn Extension Popup Script v1.1
- * Now with live chart and improved face detection status
+ * CognEn Extension Popup Script v1.2
+ *
+ * - Score bands come from lib/ml-core.js THRESHOLDS (70/40), loaded by
+ *   popup.html, so the ring matches the badge, widget and engine.
+ * - Samples: background.js writes one `lastDetection` per prediction (1 Hz)
+ *   with a per-session `seq`; the popup listens to storage changes and
+ *   records each seq exactly once (no fixed-rate polling duplicates).
+ * - Session average and the end-of-session summary come from the
+ *   background's persisted session state, so they cover the whole session,
+ *   not only the time the popup happened to be open.
  */
+
+const SCORE_BANDS = (window.__cognen && window.__cognen.mlCore && window.__cognen.mlCore.THRESHOLDS) ||
+    { ATTENTIVE_MIN: 70, DISTRACTED_MIN: 40 };
+const DEFAULT_SETTINGS = {
+    notificationsEnabled: true,
+    lowAttentionThreshold: 40,
+    breakReminderMinutes: 45,
+    soundEnabled: false
+};
 
 // DOM Elements
 const loadingOverlay = document.getElementById('loadingOverlay');
@@ -28,11 +45,12 @@ const liveChart = document.getElementById('liveChart');
 let isSessionActive = false;
 let sessionStartTime = null;
 let sessionTimerInterval = null;
-let sessionScores = [];
-let pollInterval = null;
 let currentMode = null;
 let chartData = [];
 let noFaceCount = 0;
+let lastSeenSeq = null;
+let lastSeenSessionId = null;
+let detectionListener = null;
 const MAX_CHART_POINTS = 60;
 
 // Chart rendering
@@ -115,12 +133,11 @@ async function init() {
         isSessionActive = true;
         sessionStartTime = state.sessionStartTime || Date.now();
         updateSessionUI(true);
+        chartContainer.style.display = 'block';
         sessionTimerInterval = setInterval(updateSessionTimer, 1000);
-        startPolling();
-
-        if (state.lastDetection?.hasFace) {
-            updateUI(state.lastDetection.prediction, state.lastDetection.metrics);
-        }
+        startListening();
+        if (state.lastDetection) handleDetection(state.lastDetection);
+        refreshSessionAverage();
     }
 }
 
@@ -226,43 +243,49 @@ function sendMessage(message) {
     });
 }
 
-function startPolling() {
-    if (pollInterval) clearInterval(pollInterval);
+/** Record one detection (deduplicated by session id + seq). */
+function handleDetection(det) {
+    if (!det || typeof det.seq !== 'number') return;
+    if (det.sessionId === lastSeenSessionId && det.seq === lastSeenSeq) return;
+    lastSeenSessionId = det.sessionId;
+    lastSeenSeq = det.seq;
 
-    pollInterval = setInterval(async () => {
-        const data = await chrome.storage.local.get(['lastDetection']);
-
-        if (data.lastDetection) {
-            const det = data.lastDetection;
-            const age = Date.now() - det.timestamp;
-
-            if (age < 3000) {
-                if (det.hasFace && det.prediction) {
-                    noFaceCount = 0;
-                    updateUI(det.prediction, det.metrics);
-
-                    // Add to chart data
-                    chartData.push(det.prediction.rawScore);
-                    if (chartData.length > MAX_CHART_POINTS) chartData.shift();
-                    drawChart();
-
-                    sessionScores.push(det.prediction.rawScore);
-                } else {
-                    noFaceCount++;
-                    if (noFaceCount >= 5) {
-                        updateUINoFace();
-                        updatePlaceholder('no-face');
-                    }
-                }
-            }
+    if (det.hasFace && det.prediction && typeof det.prediction.rawScore === 'number') {
+        noFaceCount = 0;
+        updateUI(det.prediction, det.metrics);
+        chartData.push(det.prediction.rawScore);
+        if (chartData.length > MAX_CHART_POINTS) chartData.shift();
+        drawChart();
+        refreshSessionAverage();
+    } else {
+        noFaceCount++;
+        if (noFaceCount >= 2) {
+            updateUINoFace();
+            updatePlaceholder('no-face');
         }
-    }, 300);
+    }
 }
 
-function stopPolling() {
-    if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
+async function refreshSessionAverage() {
+    const res = await sendMessage({ action: 'GET_SESSION' });
+    if (res && res.summary && res.summary.dataPoints > 0) {
+        avgScoreEl.textContent = res.summary.avgScore + '%';
+    }
+}
+
+function startListening() {
+    stopListening();
+    detectionListener = (changes, areaName) => {
+        if (areaName !== 'local' || !changes.lastDetection) return;
+        handleDetection(changes.lastDetection.newValue);
+    };
+    chrome.storage.onChanged.addListener(detectionListener);
+}
+
+function stopListening() {
+    if (detectionListener) {
+        chrome.storage.onChanged.removeListener(detectionListener);
+        detectionListener = null;
     }
 }
 
@@ -296,18 +319,18 @@ async function startSession() {
         }
 
         isSessionActive = true;
-        sessionStartTime = Date.now();
-        sessionScores = [];
+        const stored = await chrome.storage.local.get(['sessionStartTime']);
+        sessionStartTime = stored.sessionStartTime || Date.now();
         chartData = [];
         noFaceCount = 0;
-
-        await chrome.storage.local.set({ sessionActive: true, sessionStartTime });
+        lastSeenSeq = null;
+        lastSeenSessionId = null;
 
         loadingOverlay.classList.add('hidden');
         chartContainer.style.display = 'block';
         updateSessionUI(true);
         sessionTimerInterval = setInterval(updateSessionTimer, 1000);
-        startPolling();
+        startListening();
 
     } catch (error) {
         loadingOverlay.classList.add('hidden');
@@ -318,34 +341,29 @@ async function startSession() {
 
 async function stopSession() {
     isSessionActive = false;
-    stopPolling();
+    stopListening();
 
     if (sessionTimerInterval) {
         clearInterval(sessionTimerInterval);
         sessionTimerInterval = null;
     }
 
-    const avgScore = sessionScores.length > 0
-        ? Math.round(sessionScores.reduce((a, b) => a + b, 0) / sessionScores.length)
-        : 0;
-
-    await sendMessage({ action: 'STOP_SESSION' });
-
-    await chrome.storage.local.set({
-        sessionActive: false,
-        lastSession: {
-            startTime: sessionStartTime,
-            endTime: Date.now(),
-            avgScore,
-            dataPoints: sessionScores.length
-        }
-    });
+    // The background owns the session record (persisted across popup
+    // close/open and service-worker restarts) and returns the summary.
+    const response = await sendMessage({ action: 'STOP_SESSION' });
+    const summary = (response && response.summary) || {
+        startTime: sessionStartTime,
+        endTime: Date.now(),
+        avgScore: 0,
+        dataPoints: 0
+    };
+    const avgScore = summary.avgScore;
 
     updateSessionUI(false);
     chartContainer.style.display = 'none';
 
     // Show summary
-    const duration = Math.floor((Date.now() - sessionStartTime) / 1000);
+    const duration = Math.floor(((summary.endTime || Date.now()) - (summary.startTime || sessionStartTime || Date.now())) / 1000);
     const mins = Math.floor(duration / 60);
     const secs = duration % 60;
 
@@ -365,17 +383,12 @@ async function stopSession() {
     title.style.color = '#3FB950';
     title.style.fontWeight = '600';
 
-    const stats = document.createElement('div');
-    stats.style.fontSize = '12px';
-    stats.style.color = '#8B949E';
-    stats.innerHTML = '';
-
     const line1 = document.createElement('p');
     line1.textContent = 'Duration: ' + mins + 'm ' + secs + 's';
     const line2 = document.createElement('p');
     line2.textContent = 'Average: ' + avgScore + '%';
     const line3 = document.createElement('p');
-    line3.textContent = 'Data points: ' + sessionScores.length;
+    line3.textContent = 'Data points: ' + summary.dataPoints;
 
     wrapper.appendChild(icon);
     wrapper.appendChild(title);
@@ -436,18 +449,12 @@ function updateUI(prediction, metrics) {
     scoreProgress.style.strokeDashoffset = offset;
 
     scoreProgress.classList.remove('good', 'warning', 'danger');
-    if (score >= 75) scoreProgress.classList.add('good');
-    else if (score >= 45) scoreProgress.classList.add('warning');
+    if (score >= SCORE_BANDS.ATTENTIVE_MIN) scoreProgress.classList.add('good');
+    else if (score >= SCORE_BANDS.DISTRACTED_MIN) scoreProgress.classList.add('warning');
     else scoreProgress.classList.add('danger');
 
     scoreState.textContent = prediction.attentionState || 'Unknown';
     scoreState.className = 'score-state ' + (prediction.attentionState || '').toLowerCase();
-
-    if (sessionScores.length > 0) {
-        const recent = sessionScores.slice(-20);
-        const avg = Math.round(recent.reduce((a, b) => a + b, 0) / recent.length);
-        avgScoreEl.textContent = avg + '%';
-    }
 
     if (metrics) {
         // Blink rate - show even if 0
@@ -483,12 +490,7 @@ function updateUINoFace() {
 
 function showSettings() {
     chrome.storage.local.get(['settings'], (result) => {
-        const settings = result.settings || {
-            notificationsEnabled: true,
-            lowAttentionThreshold: 45,
-            breakReminderMinutes: 45,
-            soundEnabled: false
-        };
+        const settings = Object.assign({}, DEFAULT_SETTINGS, result.settings || {});
 
         const modal = document.createElement('div');
         modal.className = 'settings-modal';
@@ -519,10 +521,10 @@ function showSettings() {
         const soundItem = createSettingItem('🔊 Sound Alerts', 'checkbox', 'soundEnabled', settings.soundEnabled);
         body.appendChild(soundItem);
 
-        const threshItem = createSettingItem('⚠️ Alert Threshold', 'number', 'lowAttentionThreshold', settings.lowAttentionThreshold);
+        const threshItem = createSettingItem('⚠️ Alert Threshold', 'number', 'lowAttentionThreshold', settings.lowAttentionThreshold, 0, 100);
         body.appendChild(threshItem);
 
-        const breakItem = createSettingItem('☕ Break Reminder (min)', 'number', 'breakReminderMinutes', settings.breakReminderMinutes);
+        const breakItem = createSettingItem('☕ Break Reminder (min)', 'number', 'breakReminderMinutes', settings.breakReminderMinutes, 1, 180);
         body.appendChild(breakItem);
 
         // Footer
@@ -536,8 +538,8 @@ function showSettings() {
                 settings: {
                     notificationsEnabled: document.getElementById('notificationsEnabled').checked,
                     soundEnabled: document.getElementById('soundEnabled').checked,
-                    lowAttentionThreshold: parseInt(document.getElementById('lowAttentionThreshold').value) || 45,
-                    breakReminderMinutes: parseInt(document.getElementById('breakReminderMinutes').value) || 45
+                    lowAttentionThreshold: clampInt(document.getElementById('lowAttentionThreshold').value, 0, 100, DEFAULT_SETTINGS.lowAttentionThreshold),
+                    breakReminderMinutes: clampInt(document.getElementById('breakReminderMinutes').value, 1, 180, DEFAULT_SETTINGS.breakReminderMinutes)
                 }
             });
             modal.remove();
@@ -555,7 +557,13 @@ function showSettings() {
     });
 }
 
-function createSettingItem(label, type, id, value) {
+function clampInt(raw, min, max, fallback) {
+    const n = parseInt(raw, 10);
+    if (Number.isNaN(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+}
+
+function createSettingItem(label, type, id, value, min, max) {
     const item = document.createElement('label');
     item.className = 'setting-item';
 
@@ -570,8 +578,8 @@ function createSettingItem(label, type, id, value) {
         input.checked = value;
     } else {
         input.value = value;
-        input.min = type === 'number' ? '20' : undefined;
-        input.max = type === 'number' ? '120' : undefined;
+        if (min !== undefined) input.min = String(min);
+        if (max !== undefined) input.max = String(max);
     }
 
     item.appendChild(span);
@@ -584,7 +592,7 @@ toggleSessionBtn.addEventListener('click', toggleSession);
 settingsBtn.addEventListener('click', showSettings);
 
 window.addEventListener('beforeunload', () => {
-    stopPolling();
+    stopListening();
     if (sessionTimerInterval) clearInterval(sessionTimerInterval);
 });
 

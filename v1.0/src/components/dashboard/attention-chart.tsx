@@ -4,6 +4,7 @@ import type { SessionDataPoint } from '@/lib/types';
 import {
   Line,
   LineChart,
+  ReferenceArea,
   Tooltip,
   XAxis,
   YAxis,
@@ -27,6 +28,21 @@ export default function AttentionChart({ data }: AttentionChartProps) {
     time: new Date(d.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     score: d.attentionScore,
   })), [data]);
+
+  // DACE: contiguous runs of "Unsure" points (score held) are shaded.
+  const unsureSpans = useMemo(() => {
+    const spans: Array<{ x1: string; x2: string }> = [];
+    let start: number | null = null;
+    data.forEach((d, i) => {
+      if (d.unsure && start === null) start = i;
+      const endsHere = start !== null && (!data[i + 1] || !data[i + 1].unsure);
+      if (endsHere && start !== null) {
+        spans.push({ x1: chartData[start].time, x2: chartData[i].time });
+        start = null;
+      }
+    });
+    return spans;
+  }, [data, chartData]);
   
   return (
     <ChartContainer config={chartConfig} className="h-full w-full">
@@ -67,6 +83,18 @@ export default function AttentionChart({ data }: AttentionChartProps) {
             indicator="dot"
              />}
         />
+        {unsureSpans.map((s, k) => (
+          <ReferenceArea
+            key={`unsure-${k}`}
+            x1={s.x1}
+            x2={s.x2}
+            fill="hsl(var(--muted-foreground))"
+            fillOpacity={0.15}
+            strokeOpacity={0}
+            ifOverflow="extendDomain"
+            label={k === 0 ? { value: 'Undetermined', position: 'insideTop', fontSize: 10, fill: 'hsl(var(--muted-foreground))' } : undefined}
+          />
+        ))}
         <Line
           dataKey="score"
           type="monotone"

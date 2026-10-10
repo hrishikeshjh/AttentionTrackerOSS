@@ -13,6 +13,7 @@ Run: pytest v2.0/tests/test_integration.py
 
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -24,7 +25,7 @@ import pytest
 class TestFeatureExtractorIntegration:
     def _metrics(self, **kw):
         from features.face_metrics import FaceMetricsResult
-        defaults = dict(
+        defaults: dict[str, Any] = dict(
             ear=0.30, mar=0.02, pitch=0.0, yaw=0.0, roll=0.0,
             gaze_x=0.0, gaze_y=0.0,
             blink_detected=False, blink_rate=15.0, perclos=5.0,
@@ -255,6 +256,7 @@ class TestONNXSmoke:
             input_names=["input"], output_names=["logits"],
             dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
             opset_version=17,
+            dynamo=False,   # single-file TorchScript export (see training/export_onnx.py)
         )
         assert onnx_out.exists()
 

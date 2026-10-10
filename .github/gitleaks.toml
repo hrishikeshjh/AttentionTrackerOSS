@@ -1,0 +1,55 @@
+# gitleaks configuration for the secret-scan job in .github/workflows/ci.yml
+# (passed via GITLEAKS_CONFIG). Run the same scan locally from the repo root:
+#   gitleaks git --config .github/gitleaks.toml .
+#
+# Starts from the full upstream default ruleset and only adds narrowly scoped
+# allowlists for verified false positives. Do NOT add broad path or rule
+# allowlists here: every entry must name the exact finding it suppresses.
+
+title = "CognEn gitleaks config"
+
+[extend]
+useDefault = true
+
+# 1. Firebase Web SDK API key. Firebase web config is public by design: it
+#    ships in every client bundle and is not a credential (access is enforced
+#    by Firebase Security Rules and the key's API/referrer restrictions).
+#    gcp-api-key flags it; generic-api-key also matches `apiKey: "..."` in the
+#    old firebase.ts once gcp-api-key is suppressed, so both rules are listed.
+#    It is committed in v1.0/apphosting.yaml (NEXT_PUBLIC_FIREBASE_API_KEY) and
+#    was hardcoded in src/lib/firebase.ts in the initial commit. Only this
+#    exact key is allowed; any other AIza... key (e.g. a Gemini key) still
+#    fails the scan.
+[[allowlists]]
+description = "Public Firebase Web SDK API key (client config, not a secret)"
+targetRules = ["gcp-api-key", "generic-api-key"]
+regexTarget = "secret"
+regexes = ['''^AIzaSyA7CxVTz00XIAqViDmbAr92TDYiTotGda4$''']
+
+# 2. SHA-256 checksums in v1.0/scripts/models.sha256 trip generic-api-key
+#    ("...-models:" followed by a 64-hex digest). Both conditions must hold:
+#    the file AND a bare 64-char lowercase hex secret.
+[[allowlists]]
+description = "SHA-256 model checksums (not secrets)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^v1\.0/scripts/models\.sha256$''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{64}$''']
+
+# 3. Fixed fake API keys used as fixtures in the v2.0 server security tests
+#    (v2.0/tests/test_server_security.py: KEY_A / KEY_B), plus the env-var name
+#    `COGNEN_WS_MAX_PER_KEY=` that generic-api-key mistakes for a secret. They
+#    authenticate nothing outside the test client. Both the file AND the exact
+#    values must match; any other secret in that file, or these values
+#    elsewhere, still fails the scan.
+[[allowlists]]
+description = "Fake API-key fixtures in the v2.0 server security tests"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^v2\.0/tests/test_server_security\.py$''']
+regexTarget = "secret"
+regexes = [
+  '''^key-(alpha|bravo)-0123456789abcdef$''',
+  '''^COGNEN_WS_MAX_PER_KEY=$''',
+]

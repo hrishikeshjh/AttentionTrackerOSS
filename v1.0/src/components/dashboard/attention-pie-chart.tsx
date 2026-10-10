@@ -14,6 +14,8 @@ const COLORS = {
   Distracted: '#FFA657',
   Multitasking: '#F85149',
   Idle: '#6E7681',
+  // DACE: activity could not be determined (score held; not a penalty)
+  Unsure: '#8B949E',
 };
 
 export default function AttentionPieChart({ data }: AttentionPieChartProps) {
@@ -22,7 +24,8 @@ export default function AttentionPieChart({ data }: AttentionPieChartProps) {
       return [{ name: 'Idle', value: 1, fill: COLORS.Idle }];
     }
     const stateCounts = data.reduce((acc, curr) => {
-      acc[curr.attentionState] = (acc[curr.attentionState] || 0) + 1;
+      const key = curr.unsure ? 'Unsure' : curr.attentionState;
+      acc[key] = (acc[key] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
 

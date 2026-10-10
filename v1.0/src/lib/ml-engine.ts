@@ -20,6 +20,8 @@ import type {
   AttentionState,
   HandObjectProximity,
   BehaviorResult,
+  BehaviorLabel,
+  UnsureReason,
 } from './types';
 import {
   FEATURE_WEIGHTS_LEGACY,
@@ -28,12 +30,13 @@ import {
   OPTIMAL_RANGES,
 } from './scoring/constants';
 import { ExponentialMovingAverage } from './scoring/ema';
-import { ContradictionDetector } from './contradiction-detector';
+import { ContradictionDetector, type ContradictionTaxonomy } from './contradiction-detector';
+import { applyScoreHold } from './scoring/dace/score-hold';
 
-// Feature weights and thresholds now live in ./scoring/constants.ts — the
-// single source of truth shared with the Chrome extension bundle and kept
-// in sync with v2.0's Python port (see scoring/EQUIVALENCE.md). Re-exported
-// here for any existing callers importing them from this module.
+// Feature weights and thresholds now live in ./scoring/constants.ts (the
+// web app's single source of truth; the Chrome extension's ml-core.js and
+// v2.0's Python port are hand-maintained copies, not generated from it).
+// Re-exported here for any existing callers importing them from this module.
 export { FEATURE_WEIGHTS_LEGACY, FEATURE_WEIGHTS_V1_UPGRADED, THRESHOLDS, OPTIMAL_RANGES };
 
 // ==================== CONTEXT-AWARE HELPERS ====================
@@ -133,7 +136,8 @@ export { ExponentialMovingAverage };
  */
 function scoreFeature(
   name: string,
-  value: number | null
+  value: number | null,
+  contributionWeights?: Record<string, number>
 ): { score: number; contribution: number; quality: number } {
   if (value === null) return { score: 50, contribution: 0, quality: 0 };
 
@@ -235,20 +239,88 @@ function scoreFeature(
       break;
   }
 
-  const weight = FEATURE_WEIGHTS_V1_UPGRADED[name] ??
-    FEATURE_WEIGHTS_LEGACY[name] ?? 0;
+  // Without `contributionWeights` the historical lookup is used (upgraded
+  // table first, even on the legacy path), which mis-weights contributions of
+  // features whose legacy and upgraded weights differ (e.g. ear .15 vs .10).
+  // It is kept only for MLEngine's default construction, which the legacy
+  // golden fixture freezes; the app engine (APP_ENGINE_OPTIONS) and the DACE
+  // path pass the weight table actually used for scoring.
+  const weight = contributionWeights
+    ? contributionWeights[name] ?? 0
+    : FEATURE_WEIGHTS_V1_UPGRADED[name] ?? FEATURE_WEIGHTS_LEGACY[name] ?? 0;
   const contribution = (score - 50) * weight * quality;
 
   return { score, contribution, quality };
 }
 
+// ==================== DACE OPTIONS ====================
+
+/**
+ * Opt-in DACE scoring inputs (plan sections 6-7). Produced by the DACE
+ * engine from scoring/dace/feature-mapping.ts and the rule layer. When
+ * `predict()` is called without options, the legacy path runs unchanged.
+ */
+export type DacePredictInput = {
+  /**
+   * Feature values replacing the ones derived from `metrics`
+   * (keys of FEATURE_WEIGHTS_*). `null` removes a feature from the sum.
+   */
+  featureOverrides?: Partial<Record<string, number | null>>;
+  /**
+   * Weight table. 'upgraded' when context features are mapped by DACE
+   * (evidence on); omitted = the legacy selection rule
+   * (`metrics.detectedObjects !== undefined`).
+   */
+  weights?: 'legacy' | 'upgraded';
+  /** window is Unsure: hold the score (EMA not updated, state kept) */
+  unsure?: boolean;
+  unsureReason?: UnsureReason;
+  label?: BehaviorLabel | null;
+  rule?: string;
+};
+
+export type PredictOptions = { dace?: DacePredictInput };
+
+/**
+ * Engine construction options. The defaults reproduce the historical
+ * behaviour byte for byte (frozen by src/lib/__tests__/legacy-equivalence.test.ts);
+ * the app uses APP_ENGINE_OPTIONS, which only changes explanatory outputs
+ * (featureContributions / top influencers, CMCV category), never rawScore,
+ * attentionState or confidence.
+ */
+export type MLEngineOptions = {
+  /** CMCV category rules: 'v1' original (default), 'v2' corrected (see contradiction-detector.ts) */
+  cmcvTaxonomy?: ContradictionTaxonomy;
+  /**
+   * 'historical' (default): contribution weight looked up upgraded-first even
+   * on the legacy path. 'used': the weight table that actually scored the
+   * frame (legacy weights on the legacy path).
+   */
+  contributionWeights?: 'historical' | 'used';
+};
+
+/** Options of the engine the web app uses (getMLEngine / resetMLEngine, /replay). */
+export const APP_ENGINE_OPTIONS: Readonly<Required<MLEngineOptions>> = Object.freeze({
+  cmcvTaxonomy: 'v2',
+  contributionWeights: 'used',
+});
+
+/** Score fed to the EMA for an absent (no face) tick: the 'absent' behaviour score. */
+export const ABSENT_SCORE = 0;
+
 // ==================== ML ENGINE ====================
 
 export class MLEngine {
   private scoreEMA = new ExponentialMovingAverage(0.15);
-  private contradictionDetector = new ContradictionDetector();
+  private contradictionDetector: ContradictionDetector;
   private predictionHistory: MLPrediction[] = [];
   private readonly MAX_HISTORY = 100;
+  private readonly contributionWeights: 'historical' | 'used';
+
+  constructor(options: MLEngineOptions = {}) {
+    this.contradictionDetector = new ContradictionDetector(options.cmcvTaxonomy ?? 'v1');
+    this.contributionWeights = options.contributionWeights ?? 'historical';
+  }
 
   /**
    * Predict attention state from extended face metrics.
@@ -258,7 +330,13 @@ export class MLEngine {
    * ObjectDetector / HandTracker are loaded). Falls back to LEGACY path
    * when those modules are not yet initialised.
    */
-  predict(metrics: ExtendedFaceMetrics): MLPrediction {
+  predict(metrics: ExtendedFaceMetrics, opts?: PredictOptions): MLPrediction {
+    if (opts?.dace) return this.predictDace(metrics, opts.dace);
+    return this.predictLegacy(metrics);
+  }
+
+  /** The original scoring path, unchanged (guarded by the golden-fixture test). */
+  private predictLegacy(metrics: ExtendedFaceMetrics): MLPrediction {
     const useUpgraded = metrics.detectedObjects !== undefined;
     const weights = useUpgraded
       ? FEATURE_WEIGHTS_V1_UPGRADED
@@ -313,7 +391,11 @@ export class MLEngine {
       const weight = weights[name] ?? 0;
       if (weight === 0 || value === null) continue;
 
-      const result = scoreFeature(name, value);
+      const result = scoreFeature(
+        name,
+        value,
+        this.contributionWeights === 'used' ? weights : undefined
+      );
       featureScores[name] = result;
 
       weightedSum += result.score * weight * result.quality;
@@ -371,6 +453,139 @@ export class MLEngine {
       this.predictionHistory.shift();
     }
 
+    return prediction;
+  }
+
+  /**
+   * DACE scoring path: same features, weights, EMA, thresholds and CMCV as the
+   * legacy path, with DACE-substituted values, contributions computed with
+   * the weight table actually used, and the Unsure score-hold policy:
+   * EMA not updated, score held at the last smoothed value, state kept,
+   * contradiction detector still updated; with no previous score the
+   * prediction carries `unsure && !scoreHeld` (show "-", record no point).
+   * Unsure predictions are not added to the history used by getStats().
+   */
+  private predictDace(metrics: ExtendedFaceMetrics, dace: DacePredictInput): MLPrediction {
+    const useUpgraded = dace.weights
+      ? dace.weights === 'upgraded'
+      : metrics.detectedObjects !== undefined;
+    const weights = useUpgraded ? FEATURE_WEIGHTS_V1_UPGRADED : FEATURE_WEIGHTS_LEGACY;
+
+    const gazeDeviation =
+      metrics.gazeX !== null && metrics.gazeY !== null
+        ? Math.sqrt(metrics.gazeX ** 2 + metrics.gazeY ** 2)
+        : null;
+    const featureValues: Record<string, number | null> = {
+      ear: metrics.ear,
+      perclos: metrics.perclos,
+      blinkRate: metrics.blinkRate,
+      gazeDeviation,
+      headPoseStability: metrics.headPoseStability,
+      yawDeviation: metrics.yaw,
+      fatigueIndex: metrics.fatigueIndex,
+      fidgetScore: metrics.fidgetScore,
+      eyebrowRaise: metrics.eyebrowRaise ?? null,
+      mouthOpenness: metrics.mouthOpenness,
+      faceDistance: metrics.faceDistance,
+      facePresence: metrics.faceArea,
+    };
+    if (useUpgraded) {
+      featureValues['contextAwarePitch'] = computeContextAwarePitch(metrics);
+      featureValues['objectContext'] = computeObjectContext(metrics);
+      featureValues['handObjectProximity'] = encodeHandProximity(metrics.handObjectProximity);
+      featureValues['temporalPattern'] = encodeTemporalPattern(metrics.behaviorResult);
+    } else {
+      featureValues['pitchDeviation'] = metrics.pitch;
+    }
+    for (const [k, v] of Object.entries(dace.featureOverrides ?? {})) {
+      if (v !== undefined) featureValues[k] = v;
+    }
+
+    const featureScores: Record<string, { score: number; contribution: number; quality: number }> = {};
+    let totalWeight = 0;
+    let weightedSum = 0;
+    let qualitySum = 0;
+    for (const [name, value] of Object.entries(featureValues)) {
+      const weight = weights[name] ?? 0;
+      if (weight === 0 || value === null) continue;
+      const result = scoreFeature(name, value, weights);
+      featureScores[name] = result;
+      weightedSum += result.score * weight * result.quality;
+      totalWeight += weight * result.quality;
+      qualitySum += result.quality;
+    }
+    const rawScore = totalWeight > 0 ? weightedSum / totalWeight : 50;
+
+    const unsure = dace.unsure === true;
+    const hold = applyScoreHold(this.scoreEMA, rawScore, unsure);
+
+    const featureCount = Object.values(featureValues).filter((v) => v !== null).length;
+    const completeness = featureCount / Object.keys(weights).length;
+    const avgQuality = featureCount > 0 ? qualitySum / featureCount : 0;
+    const confidence = completeness * avgQuality * 0.9 + 0.1;
+
+    let attentionState: AttentionState;
+    if (unsure) {
+      const last = this.predictionHistory[this.predictionHistory.length - 1];
+      attentionState = hold.held && last ? last.attentionState : 'Idle';
+    } else {
+      const sm = hold.smoothed as number;
+      attentionState =
+        sm >= THRESHOLDS.ATTENTIVE_MIN ? 'Attentive' : sm >= THRESHOLDS.DISTRACTED_MIN ? 'Distracted' : 'Multitasking';
+    }
+
+    const featureImportance: Record<string, number> = {};
+    const featureContributions: Record<string, number> = {};
+    for (const [name, result] of Object.entries(featureScores)) {
+      featureImportance[name] = weights[name] ?? 0;
+      featureContributions[name] = result.contribution;
+    }
+
+    const contradiction = this.contradictionDetector.compute(metrics);
+
+    const prediction: MLPrediction = {
+      attentionState,
+      confidence,
+      rawScore: hold.smoothed === null ? 0 : Math.round(hold.smoothed),
+      featureImportance,
+      featureContributions,
+      contradictionIndex: contradiction.contradictionIndex,
+      contradictionCategory: contradiction.category,
+      scoringMode: 'dace',
+      scoreHeld: hold.held,
+      unsure,
+      ...(unsure && dace.unsureReason ? { unsureReason: dace.unsureReason } : {}),
+      daceLabel: unsure ? null : (dace.label ?? null),
+      ...(dace.rule ? { daceRule: dace.rule } : {}),
+    };
+
+    if (!unsure) {
+      this.predictionHistory.push(prediction);
+      if (this.predictionHistory.length > this.MAX_HISTORY) this.predictionHistory.shift();
+    }
+    return prediction;
+  }
+
+  /**
+   * No face for a sustained period (the caller decides; webcam-panel uses
+   * ABSENCE_GRACE_MS). Absence is scored as the 'absent' behaviour
+   * (ABSENT_SCORE = 0, the same value as BEHAVIOR_ATTENTION_SCORES.absent and
+   * v2.0's absent class) through the same EMA, so a long absence lowers the
+   * session average gradually instead of being skipped; the state is 'Idle'.
+   * The CMCV is not updated (there are no modalities to compare). Never
+   * called by the legacy golden fixture, so the frozen path is unchanged.
+   */
+  predictAbsent(): MLPrediction {
+    const smoothed = this.scoreEMA.update(ABSENT_SCORE);
+    const prediction: MLPrediction = {
+      attentionState: 'Idle',
+      confidence: 0.9,
+      rawScore: Math.round(smoothed),
+      featureImportance: {},
+      featureContributions: {},
+    };
+    this.predictionHistory.push(prediction);
+    if (this.predictionHistory.length > this.MAX_HISTORY) this.predictionHistory.shift();
     return prediction;
   }
 
@@ -474,10 +689,10 @@ export function debugPrediction(
 let mlEngineInstance: MLEngine | null = null;
 
 export function getMLEngine(): MLEngine {
-  if (!mlEngineInstance) mlEngineInstance = new MLEngine();
+  if (!mlEngineInstance) mlEngineInstance = new MLEngine(APP_ENGINE_OPTIONS);
   return mlEngineInstance;
 }
 
 export function resetMLEngine(): void {
-  mlEngineInstance = new MLEngine();
+  mlEngineInstance = new MLEngine(APP_ENGINE_OPTIONS);
 }
