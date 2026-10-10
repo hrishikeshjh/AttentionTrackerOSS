@@ -143,6 +143,8 @@ export type SessionDataPoint = {
   /** DACE: score was held because the window was "Unsure" (excluded from averages/trends) */
   unsure?: boolean;
   unsureReason?: UnsureReason;
+  /** DACE behaviour label for this point (absent when DACE is off or the point is Unsure) */
+  behaviorLabel?: BehaviorLabel;
 };
 
 export type SessionSummary = {
@@ -150,6 +152,12 @@ export type SessionSummary = {
   multitaskEvents: number;
   engagementLevel: 'High' | 'Moderate' | 'Low';
   duration: string;
+  /** DACE: share (0-1) of data points that were Unsure (only set when the data carries DACE flags) */
+  unsureShare?: number;
+  /** DACE: Unsure point counts per reason code */
+  unsureReasons?: Partial<Record<UnsureReason, number>>;
+  /** DACE: e.g. "CognEn could not determine the activity for 12% of the session (mostly: desk not visible)" */
+  unsureText?: string | null;
 };
 
 export type FaceMetrics = {

@@ -1,0 +1,23 @@
+# SHA-256 checksums verified by scripts/setup-models.sh (format: <sha256>  <path relative to v1.0/>).
+# Recorded 2026-10-10 from the pinned URLs in setup-models.sh and from
+# node_modules/@mediapipe/tasks-vision@1.0.1/wasm. Update ONLY together with a
+# deliberate URL/version change, and note it in the PR.
+#
+# MediaPipe models (Apache-2.0), storage.googleapis.com/mediapipe-models:
+64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff  public/models/face_landmarker.task
+fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1  public/models/hand_landmarker.task
+0720bf247bd76e6594ea28fa9c6f7c5242be774818997dbbeffc4da460c723bb  public/models/efficientdet_lite0.tflite
+#
+# @mediapipe/tasks-vision 1.0.1 WASM (copied from node_modules):
+e170ee67dd4e16c1a6fcd8840a206687e5a59b22c20e4a902bc445b095454d73  public/mediapipe/wasm/vision_wasm_internal.js
+8da277a733926eacd0474b8704b36742d6ec3231c57a860c5b889dff8f1df886  public/mediapipe/wasm/vision_wasm_internal.wasm
+da8934057f147b622e82cfb4c0dbd85461c598e268588b5a8ba9ca963a8ff82d  public/mediapipe/wasm/vision_wasm_module_internal.js
+2dabd8e23c60984628beb7bb338764c81a08e6837145273f59578684b5d53c1b  public/mediapipe/wasm/vision_wasm_module_internal.wasm
+e81d715a3d42cc3373602eb2f7aff795d164934db680e32496b65dab537f9658  public/mediapipe/wasm/vision_wasm_nosimd_internal.js
+a28483cd42e74e855bf5ebdb6b40d9b66a5b49e35e95020bc97669e6822a3192  public/mediapipe/wasm/vision_wasm_nosimd_internal.wasm
+#
+# YOLOv8n object model (AGPL-3.0, decision R2: research use only, NOT downloaded
+# by this script). After exporting it yourself (see setup-models.sh), record its
+# hash here by uncommenting and filling the line below, and set
+# NEXT_PUBLIC_DACE_YOLO_SHA256 to the same value so the browser verifies it:
+# <sha256-of-your-export>  public/models/yolov8n-objects.onnx

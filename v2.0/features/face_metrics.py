@@ -93,13 +93,28 @@ HEAD_POSE_PITCH_GAIN = 33.3  # 50 / 1.5 -- see v1.0/src/lib/scoring/pose/head-po
 def calculate_head_pose(lm: list[Point2D]) -> tuple[float | None, float | None, float | None]:
     """Returns (yaw, pitch, roll) in approximate degrees.
 
-    Canonical formula -- matches v1.0/src/lib/scoring/pose/head-pose.ts.
-    Both yaw and pitch are normalized by the SAME reference distance
-    (interocular distance) rather than pitch using nose-chin distance, which
-    foreshortens as the head pitches and biased the pitch signal against
-    itself at extreme angles. Any change here must be mirrored in the TS
-    version in the same PR (see v1.0/src/lib/scoring/EQUIVALENCE.md) and vice
-    versa.
+    Same formula and gains as v1.0/src/lib/scoring/pose/head-pose.ts (the
+    v1.0 legacy path, SCORING_CORE_VERSION 1.1.0 in
+    v1.0/src/lib/scoring/VERSION.ts). Both yaw and pitch are normalized by
+    the SAME reference distance (interocular distance) rather than pitch
+    using nose-chin distance. There is no automated sync process and no
+    EQUIVALENCE.md: the copies are kept in step by hand, and
+    tests/test_pitch_characterisation.py checks this function numerically
+    against the constants and results the v1.0 TypeScript test emits
+    (docs/proposals/evidence/legacy_pitch_constants.json).
+
+    KNOWN DEFECT (documented, deliberately not changed here): the output is
+    not degrees and has no neutral offset. A level head gives pitch ~ +12.6,
+    and tilting the head DOWN makes pitch RISE and saturate (~ +16 at
+    30-45 deg down), so every `pitch < -15` consumer
+    (inference/behavior_classifier.py) is effectively unreachable by looking
+    down. A sign flip or offset alone cannot fix this (the response is
+    nearly flat beyond ~15 deg down). v1.0 fixes it only inside DACE
+    (ARCHITECTURE.md §11: MediaPipe transformation-matrix pitch, +down,
+    relative to a 5 s reference; legacy fields receive the negated value).
+    DACE declares v2.0 out of scope, so v2.0 keeps this formula until a
+    v2.0 measurement change (e.g. matrix- or solvePnP-based pitch) is
+    planned and validated on its own.
     """
     nose, l_eye, r_eye = lm[30], lm[36], lm[45]
     eye_mid = Point2D((l_eye.x + r_eye.x) / 2, (l_eye.y + r_eye.y) / 2)

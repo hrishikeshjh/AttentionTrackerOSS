@@ -15,3 +15,14 @@ __pycache__
 # Virtual environments
 .venv/
 
+# Claude Code notes
+CLAUDE.md
+
+fixes/
+DACE-IMPLEMENTATION-PLAN.md
+
+# DACE model assets (downloaded/copied by v1.0/scripts/setup-models.sh; verified by scripts/models.sha256)
+*.tflite
+v1.0/public/mediapipe/wasm/
+v1.0/public/onnx/*.wasm
+v1.0/public/onnx/*.mjs

@@ -10,9 +10,14 @@ import ModelDataCard from './model-data-card';
 import MLInsightsCard from './ml-insights-card';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '../ui/button';
-import { Download, Loader2 } from 'lucide-react';
+import { Download, FileDown, Loader2 } from 'lucide-react';
 import { generateReportAction } from '@/app/actions';
 import { getAnalyticsEngine } from '@/lib/analytics';
+import type { DaceStatus } from './webcam-panel';
+import type { LatencySummary } from '@/lib/dace/latency';
+import { downloadJsonl, type EvalLogger } from '@/lib/dace/eval-log';
+import { UNSURE_REASON_TEXT } from '@/lib/scoring/dace/abstain';
+import type { UnsureReason } from '@/lib/types';
 
 interface VisualsPanelProps {
   sessionData: SessionDataPoint[];
@@ -21,7 +26,25 @@ interface VisualsPanelProps {
   sessionActive: boolean;
   faceMetrics: ExtendedFaceMetrics | null;
   prediction: MLPrediction | null;
+  /** DACE: the current score is held (window Unsure) */
+  currentHeld?: boolean;
+  daceStatus?: DaceStatus | null;
+  latency?: LatencySummary | null;
+  /** research builds only: enables the manual eval-log download */
+  evalLogger?: EvalLogger | null;
 }
+
+/** "U2: 12, U1: 3" -> "desk not visible (12), no phone, book or writing evidence (3)" */
+function reasonsText(counts: Partial<Record<UnsureReason, number>> | undefined): string | undefined {
+  if (!counts) return undefined;
+  const parts = (Object.entries(counts) as Array<[UnsureReason, number]>)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([r, n]) => `${UNSURE_REASON_TEXT[r]} (${n})`);
+  return parts.length ? parts.join(', ') : undefined;
+}
+
+const LATENCY_ORDER = ['measure', 'detector', 'hands', 'rules', 'mapping', 'total'];
 
 export default function VisualsPanel({
   sessionData,
@@ -29,7 +52,11 @@ export default function VisualsPanel({
   currentScore,
   sessionActive,
   faceMetrics,
-  prediction
+  prediction,
+  currentHeld = false,
+  daceStatus = null,
+  latency = null,
+  evalLogger = null,
 }: VisualsPanelProps) {
   const { toast } = useToast();
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
@@ -62,6 +89,9 @@ export default function VisualsPanel({
         multitaskEvents: summary.multitaskEvents,
         engagementLevel: summary.engagementLevel,
         duration: summary.duration,
+        ...(summary.unsureShare !== undefined
+          ? { unsureShare: summary.unsureShare, unsureReasons: reasonsText(summary.unsureReasons) }
+          : {}),
       });
 
       if (result.success && result.data) {
@@ -92,9 +122,9 @@ export default function VisualsPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <SummaryCards summary={summary} currentScore={currentScore} />
+      <SummaryCards summary={summary} currentScore={currentScore} currentHeld={currentHeld} />
       <div className="grid gap-4 lg:grid-cols-2">
-        <ModelDataCard faceMetrics={faceMetrics} />
+        <ModelDataCard faceMetrics={faceMetrics} measurementLabel={daceStatus?.active ? daceStatus.measurementLabel : undefined} />
         <MLInsightsCard
           prediction={prediction}
           analytics={analytics}
@@ -137,6 +167,57 @@ export default function VisualsPanel({
           )}
         </CardContent>
       </Card>
+      {evalLogger && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>DACE research tools</CardTitle>
+              <CardDescription>
+                Evaluation log (no images, no user id, random session id) and per-component latency. Downloaded only when you click.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => downloadJsonl(evalLogger)}
+              disabled={evalLogger.size() === 0}
+            >
+              <FileDown className="mr-2 h-4 w-4" />
+              Download eval log
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {latency && Object.keys(latency).length > 0 ? (
+              <table className="w-full text-xs font-mono">
+                <thead>
+                  <tr className="text-muted-foreground">
+                    <th className="text-left font-normal">component</th>
+                    <th className="text-right font-normal">n</th>
+                    <th className="text-right font-normal">p50 ms</th>
+                    <th className="text-right font-normal">p95 ms</th>
+                    <th className="text-right font-normal">max ms</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {LATENCY_ORDER.filter((k) => latency[k]).map((k) => (
+                    <tr key={k} className={k === 'total' && latency[k].p95 > 200 ? 'text-red-500' : ''}>
+                      <td>{k}</td>
+                      <td className="text-right">{latency[k].n}</td>
+                      <td className="text-right">{latency[k].p50.toFixed(1)}</td>
+                      <td className="text-right">{latency[k].p95.toFixed(1)}</td>
+                      <td className="text-right">{latency[k].max.toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="text-sm text-muted-foreground">No latency samples yet.</p>
+            )}
+            <p className="mt-2 text-xs text-muted-foreground">
+              Target: p95 total ≤ 200 ms per frame (not yet measured on reference hardware). Log records: {evalLogger.size()}.
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

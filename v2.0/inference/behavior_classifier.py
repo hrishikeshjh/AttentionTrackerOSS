@@ -2,8 +2,22 @@
 BehaviorClassifier — 15-frame temporal behavior classifier.
 (ARCHITECTURE.md §3 Behavior Inference Layer + §5.3)
 
-Mirrors temporal-classifier.ts but for Python / v2.0 server context.
-Rule-based by default; plugs in ONNX 1D-CNN when model file is present.
+Python counterpart of v1.0's temporal-classifier.ts (v1.0 legacy path, DACE
+off) for the v2.0 server. Rule-based by default; plugs in ONNX 1D-CNN when
+model file is present. The rules are similar but not identical to the TS
+rules, and the two surfaces use different proximity codes in their rule
+layers (see _PROX_CODE below).
+
+Pitch convention: the `pitch < -15` / `pitch_norm < -0.15` checks below
+assume "head down = negative". With the current 68-point formula
+(features/face_metrics.py::calculate_head_pose) a downward tilt makes pitch
+rise instead, so these branches are effectively unreachable by looking down
+(tests/test_pitch_characterisation.py). This is documented, not changed:
+v1.0 fixes it only inside DACE (ARCHITECTURE.md §11.8), which declares v2.0
+out of scope.
+
+"Unsure": v1.0 DACE can abstain ("Unsure" + reason code U1-U4, score held).
+v2.0 has no abstention; BehaviorResult always carries one of BEHAVIOR_LABELS.
 """
 
 from __future__ import annotations
@@ -35,7 +49,14 @@ ATTENTION_SCORES: dict[str, int] = {
 WINDOW_SIZE  = 15
 FEATURE_DIM  = 13
 
-# Proximity codes (matches feature_extractor.py and temporal-classifier.ts)
+# Proximity codes. Same table as features/feature_vector.py::_PROXIMITY_CODE
+# (used for training) and as v1.0 temporal-classifier.ts PROXIMITY_CODES_V2,
+# which v1.0 uses only when feeding a loaded ONNX model (loadModel default
+# proximityCodes='v2'). v1.0's own rule layer and its 13-dim vector
+# (encode13 / extractFeatures) use DIFFERENT codes (PROXIMITY_CODES_V1:
+# book 1.0, pen 0.8, desk 0.5, phone 0.2, not visible 0.0). Checked against
+# the generated fixture shared/fixtures/encode13_cross_language.json by
+# tests/test_cross_language_contract.py.
 _PROX_CODE: dict[str, float] = {
     "hands_not_visible": 0.00,
     "hands_on_desk":     0.25,
@@ -96,6 +117,10 @@ class BehaviorClassifier:
     # ── Feature extraction ────────────────────────────────────────────────────
 
     def _extract(self, frame: dict) -> list[float]:
+        # Own copy of the 13-dim encoder (not features/feature_vector.py).
+        # Known divergence, pinned by tests/test_cross_language_contract.py:
+        # `m.ear or 0.3` maps an EAR of exactly 0.0 to 0.3, whereas
+        # encode_feature_vector and v1.0 encode13 keep 0.0.
         m   = frame["metrics"]
         objs = frame.get("detected_objects", [])
         prox = frame.get("hand_proximity", "hands_not_visible")

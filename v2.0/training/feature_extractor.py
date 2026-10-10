@@ -1,6 +1,9 @@
 """
 feature_extractor.py — Convert FaceMetricsResult + context into the 13-dim
-feature vector used by the 1D-CNN and temporal-classifier.ts.
+feature vector used by the 1D-CNN. v1.0 temporal-classifier.ts uses the same
+layout, but its rule layer uses different proximity codes; only its ONNX
+input path (loadModel, proximityCodes='v2') matches index 12 here
+(see features/feature_vector.py).
 
 This is now a thin shim over features/feature_vector.py, the single
 canonical implementation (see that module's docstring for full rationale).

@@ -1,5 +1,7 @@
 # CognEn Chrome Extension
 
+> **Scope note.** The extension is **out of scope for DACE** and keeps hand-copied legacy formulas (`lib/ml-core.js`) that diverge from the web app's `src/lib/scoring/` (EMA alpha 0.35 vs 0.15, different fatigue/blink/fidget constants, no scoring case for the context-aware features, so those contribute a constant 50). Score color bands are not uniform across extension surfaces (ml-core and the content widget use 80/50, the badge 70/40, the popup ring 75/45). The legacy pitch defect described in `v1.0/README.md` §24 applies here too. Nothing in the extension has automated tests.
+
 A Chrome extension for real-time cognitive engagement tracking using facial analysis.
 
 ## Features

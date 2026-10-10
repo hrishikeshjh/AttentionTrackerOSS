@@ -3,6 +3,8 @@
 > **Server-based, multi-person cognitive engagement analysis for classrooms**
 > For the single-user browser version, see **[v1.0 README](../v1.0/README.md)**.
 
+> **Status (honest).** v2.0 is implemented and unit-tested (light tier: 86 pass / 6 skip) but has never been run on real classroom/CCTV footage or trained on real data; every accuracy/latency figure here is a target until measured on dataset D1 / pilot set P1. **DACE (Downward-Attention Context Engine, [ARCHITECTURE.md §11](../ARCHITECTURE.md)) is v1.0-only**: v2.0 deliberately keeps the legacy head-pitch formula and has no "Unsure"/score-hold. v2.0 changes made alongside DACE: opt-in `COGNEN_HAND_PROXIMITY=pose` (hand/object proximity from YOLOv8-pose wrists, `features/hand_proximity.py`); cross-language contract tests (`tests/test_cross_language_contract.py`, generated fixture `shared/fixtures/encode13_cross_language.json`, TS to Python one-way); pitch characterisation test (`tests/test_pitch_characterisation.py`); unused `config.py` constants labelled as such.
+
 ---
 
 ## Table of Contents
@@ -41,7 +43,7 @@ CognEn v2.0 scales the [v1.0 single-user pipeline](../v1.0/README.md) to **multi
 
 **Core equation**: `v2.0 = multi_person_detection + tracking + [v1.0_per_person_pipeline × N] + room_analytics`
 
-Each tracked person gets their own independent instance of the v1.0 ML pipeline (BlinkDetector, HeadPoseTracker, FatigueCalculator, BehaviorClassifier).
+Each tracked person gets their own instance of Python ports of the v1.0 **legacy** detectors (BlinkDetector, HeadPoseTracker, FatigueCalculator) plus a BehaviorClassifier. This is the legacy path only: v2.0 has no DACE, no per-person MLEngine and no EMA; the per-person `attention_score` is a fixed lookup of the behavior label and `room_attention` is their mean.
 
 ---
 
@@ -201,7 +203,7 @@ Python port of v1.0 `face-geometry.ts`. Per-person stateful detectors:
 | `HeadPoseTracker` | Pose history (30s) | Stability score, fidget score, pose variance |
 | `FatigueCalculator` | PERCLOS/blink/EAR history (5min) | Composite fatigue index (0–100) |
 
-**13-dim feature vector** (identical to v1.0 for model compatibility):
+**13-dim feature vector** (same layout as v1.0's `encode13`, indices 0-11 numerically equal per the generated fixture; index 12 uses v2.0's proximity codes, which equal only v1.0's ONNX input path, NOT v1.0's rule layer, which uses book 1.0 / pen 0.8 / desk 0.5 / phone 0.2; checked by `tests/test_cross_language_contract.py`. Known divergence: `behavior_classifier._extract` maps EAR 0.0 to 0.3):
 
 | # | Feature | Normalization |
 |---|---------|---------------|
@@ -214,7 +216,7 @@ Python port of v1.0 `face-geometry.ts`. Per-person stateful detectors:
 | 6 | stability | /100 → [0, 1] |
 | 7–10 | object one-hots | book, phone, laptop, none |
 | 11 | fidget | /100 → [0, 1] |
-| 12 | proximity_code | 0.0–1.0 |
+| 12 | proximity_code | `hands_not_visible` 0.00, `hands_on_desk` 0.25, `holding_pen` 0.50, `holding_book` 0.75, `holding_phone` 1.00 |
 
 ---
 
@@ -315,7 +317,9 @@ python3 v2.0/training/export_onnx.py \
 
 ## 8. Context-Gate Override
 
-Post-processes CNN softmax probabilities with hard object-context rules:
+Post-processes CNN softmax probabilities with hard object-context rules.
+
+> **Reachability (honest).** By default the Context-Gate never fires on the server: `hand_proximity` is always `hands_not_visible`, and the `holding_*` conditions need `COGNEN_HAND_PROXIMITY=pose` (wrist-based, unvalidated on CCTV, `holding_pen` never produced). The "Downward gaze" row is effectively unreachable: v2.0 keeps the legacy pitch formula, where looking down makes pitch rise, so the `pitch < -15` check cannot trigger (documented in `tests/test_pitch_characterisation.py`; DACE fixes this in v1.0 only).
 
 | Condition | Action |
 |-----------|--------|
@@ -337,7 +341,9 @@ Per-frame output structure:
       "seat_id": "seat_2",
       "behavior": "attentive_screen",
       "attention_score": 82.5,
-      "confidence": 0.94
+      "confidence": 0.94,
+      "contradiction_index": 0.12,
+      "contradiction_category": "coherent"
     }
   ],
   "occupancy": {
@@ -523,6 +529,10 @@ python3 -m pytest tests/ -v
 # consistency, train/val split, CVAT conversion, v1-pipeline logic, behavior rules
 python3 -m pytest tests/ --ignore=tests/test_tracking.py --ignore=tests/test_v2_pipeline.py -v
 
+# Current light tier: 86 pass / 6 skip. Includes the cross-language contract tests
+# (test_cross_language_contract.py, reads shared/fixtures/encode13_cross_language.json),
+# test_hand_proximity.py and test_pitch_characterisation.py.
+
 # Evaluation against ARCHITECTURE.md targets
 python3 v2.0/evaluation/evaluate.py \
     --model v2.0/models/behavior_classifier_v2.onnx \
@@ -581,20 +591,20 @@ Trained on 42,600 synthetic windows (AR(1) temporal autocorrelation). Tested on 
 ## 20. Privacy
 
 1. **No raw video stored** — only derived feature vectors and scores
-2. **On-premise** — all inference local; no cloud API calls
-3. **Anonymization** — track IDs by default; name mapping opt-in
-4. **Retention** — auto-purge after `DATA_RETENTION_HOURS` (default 24h)
+2. **On-premise** — all inference local; no cloud API calls (v2.0 has no Gemini/report call)
+3. **Anonymization** — track IDs only (no name mapping is implemented; `ANONYMISE_BY_DEFAULT` in `config.py` is unused)
+4. **Retention** — auto-purge is **not implemented**: `DATA_RETENTION_HOURS` exists in `config.py` but nothing reads it. Snapshots are served live and held in memory only.
 
 ---
 
 ## 21. Cross-Reference: v1.0
 
-v2.0 reuses v1.0's per-person analysis pipeline. See [v1.0 README](../v1.0/README.md) for browser deployment details.
+v2.0 reuses hand-ported copies of v1.0's *legacy* per-person math (not the DACE path, not shared code; kept in step by hand, with only the generated `encode13` fixture and the pitch characterisation test as automated checks). See [v1.0 README](../v1.0/README.md) for browser deployment details.
 
 | Component | v1.0 (Browser) | v2.0 (Server) |
 |-----------|----------------|---------------|
 | Face detection | face-api.js | YOLOv8-m + MediaPipe |
-| Landmarks | face-api.js 68-pt | MediaPipe → ibug 68-pt |
+| Landmarks | face-api.js 68-pt (MediaPipe Face Landmarker in opt-in DACE mode) | MediaPipe → ibug 68-pt (`_MP_TO_68` has known wrong indices, see CLAUDE.md findings) |
 | EAR/MAR/Gaze | TypeScript | Python port |
 | Object detection | YOLOv8-nano ONNX.js | YOLOv8-s Ultralytics |
 | Temporal classifier | Browser ONNX | Server ONNX |
@@ -607,9 +617,9 @@ v2.0 reuses v1.0's per-person analysis pipeline. See [v1.0 README](../v1.0/READM
 
 ## 22. Cross-Modal Contradiction Vector (Novel)
 
-Additive to the already-documented Context-Gate Override (§8): that mechanism is a rule that fires on *one* known confusion (phone vs. reading) and discards the disagreement magnitude once applied. The **Cross-Modal Contradiction Vector (CMCV)**, ported identically from v1.0 (see [v1.0 README §21](../v1.0/README.md#21-cross-modal-contradiction-vector-novel) for the full spec), is a general, symmetric, per-frame disagreement statistic over all modality pairs (gaze, posture-stability, ocular/PERCLOS, object-context, hand-action).
+Additive to the already-documented Context-Gate Override (§8): that mechanism is a rule that fires on *one* known confusion (phone vs. reading) and discards the disagreement magnitude once applied. The **Cross-Modal Contradiction Vector (CMCV)**, ported from v1.0 (v1.0 legacy path only; DACE mode is not ported) (see [v1.0 README §21](../v1.0/README.md#21-cross-modal-contradiction-vector-novel) for the full spec), is a general, symmetric, per-frame disagreement statistic over all modality pairs (gaze, posture-stability, ocular/PERCLOS, object-context, hand-action).
 
-**Implementation**: `inference/contradiction_detector.py`, called from `RoomAnalyzer._analyze_person()` alongside the behavior classifier — computed per tracked person, using the same `metrics`, `person_objs`, and `hand_proximity` already assembled there, and exposed as `contradiction_index`/`contradiction_category` sibling fields on the per-person result dict (never folded into `attention_score`). Cross-verified against the TypeScript implementation to produce matching categorizations (`fatigue_masking`, `prop_without_engagement`, `context_conflict`, `coherent`) on identical inputs.
+**Implementation**: `inference/contradiction_detector.py`, called from `RoomAnalyzer._analyze_person()` alongside the behavior classifier — computed per tracked person, using the same `metrics`, `person_objs`, and `hand_proximity` already assembled there, and exposed as `contradiction_index`/`contradiction_category` sibling fields on the per-person result dict (never folded into `attention_score`). It uses the same taxonomy (`fatigue_masking`, `prop_without_engagement`, `context_conflict`, `coherent`) as the TypeScript implementation, but there is **no automated cross-language check** (no shared fixture for CMCV); the two ports are kept in step by hand, and the v1.0 `hands_on_desk` / `coherent` quirks listed in CLAUDE.md findings may differ. With the default `COGNEN_HAND_PROXIMITY=off` the hand-action modality always reads `hands_not_visible`.
 
 **Integration point**: feeds the currently-empty `v2.0/dashboard/` and `v2.0/analytics/` stub packages — a natural, currently-unused home for a "flag high-contradiction students for teacher review" view.
 

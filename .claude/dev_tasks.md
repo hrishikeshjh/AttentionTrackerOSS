@@ -1,5 +1,7 @@
 # CognEn Development Tasks
 
+> Status note: `[x]` below means "code written and unit-tested", not "validated". Nothing here has been evaluated on real data, and DACE (Phases 14-19) has not been run in a browser or against a camera. Phase 6 (extension mirror) is known to diverge from the web app and its context scoring is a no-op (see CLAUDE.md findings). Test counts in older phases (61) are historical: current v2.0 light tier is 86 pass / 6 skip, v1.0 Vitest is 257.
+
 ## v1.0 Upgrade
 
 ### Phase 1 — Type Foundation
@@ -106,7 +108,7 @@
 [x] evaluation/latency_benchmark.py — LatencyBenchmark context manager + benchmark_v2_pipeline() helper
 [x] evaluation/evaluate.py — consolidated runner → JSON report; all ARCHITECTURE §7 targets pass/fail
 
-## Phase 11 — End-to-End Tests (61 tests, all passing)
+## Phase 11 — End-to-End Tests (61 tests at the time; now superseded, see status note)
 [x] tests/test_v1_pipeline.py — 19 tests: FaceMetrics, rule-based inference, temporal window, full pipeline
 [x] tests/test_v2_pipeline.py — 21 tests: Track, SeatMapper(6-seat), BehaviorClassifier, RoomSnapshot, eval smoke
 [x] tests/test_integration.py — 12 tests: feature extractor, dataset base, streaming eval, per-seat isolation
@@ -141,6 +143,39 @@
     - All 5 behavior targets met: accuracy=1.00, F1=1.00, phone_prec=1.00, reading_recall=1.00
 [x] Verified context-gate override correctness (phone+prox≥0.9 → phone; book+prox≥0.7+no_phone → reading)
 [x] Produced experiment_report_v2.md with comparison vs Experiment 1
+
+## DACE (Downward-Attention Context Engine) — v1.0 web app only; Stage 1 implemented, Stage 2 hooks only
+
+Plan: `DACE-IMPLEMENTATION-PLAN.md`; spec: `ARCHITECTURE.md` §11. Extension and v2.0 are out of scope (v2.0 knowingly keeps the legacy pitch formula).
+
+### Phase 14 — W1 (M0): foundations
+[x] vitest alias/node env, `tsx`, `dace:replay` script, DACE config (zod) + presets A, A', A'', B, C, F, H, I, `DaceParams` (Table A.6)
+[x] Golden-fixture legacy-equivalence test (`src/lib/__tests__/legacy-equivalence.test.ts`) guarding the DACE-off path
+[x] Pitch characterisation test + `docs/proposals/evidence/pitch_sim.py` (reads constants from generated JSON)
+[x] `scripts/setup-models.sh` downloads + verifies pinned MediaPipe models (`scripts/models.sha256`), `.gitignore` for WASM/tflite
+[x] Detector self-test, eval log (FR9), latency probes, replay skeleton
+
+### Phase 15 — W2-3 (M1): measurement
+[x] Provider abstraction (legacy-faceapi / pnp68 / mediapipe), matrix pitch (+down), pitch reference, blendshape gaze, eye openness, corrected PERCLOS, looking-down test, solvePnP, audited mesh adapter (+topology test)
+[ ] Pilot recordings P1, ArUco validation (sign 100%, error <= 5 deg), fit earScale/prior -- NOT DONE (no recordings)
+
+### Phase 16 — W4-5 (M2): evidence
+[x] Hand landmarker, hand-object relations, evidence (phone-in-use, book, writing, desk visibility), MediaPipe object detector (Apache-2.0 comparison), staggered scheduling, feature mapping for E, offline replay
+
+### Phase 17 — W6 (M3): rules, abstention, integration
+[x] Window, ordered rules, abstention U1-U4 (U5 Stage 2), score-hold, opt-in MLEngine DACE path, FixedTickScheduler + no-face frames, dashboard/report/analytics integration ("Undetermined" card, chart spans, pie slice, PDF line)
+[ ] Supervisor sign-off on D11 rule order/U4 definition and the feature mapping -- PENDING
+
+### Phase 18 — W7: evaluation tooling
+[x] `/replay` page, `scripts/dace/{replay-features,metrics,cvat-windows}.ts` (FDR-DA, phone recall, Unsure rate, answer rate, latency)
+[ ] Run all Stage 1 presets over P1; latency profiling (target p95 <= 200 ms); Unsure >= 90% on desk-out-of-frame; FDR-DA and phone recall -- NOT DONE (targets, unmeasured)
+
+### Phase 19 — W8: docs and Stage 2 hooks
+[x] Docs (ARCHITECTURE §11, CLAUDE.md, READMEs, novelty list of ten), `loadModel()` contract fix + mocked-ort test, conformal/kinematics stubs (no runtime caller)
+[x] v2.0 side: opt-in `COGNEN_HAND_PROXIMITY=pose`, cross-language contract tests + `shared/fixtures`, pitch characterisation test, unused config constants labelled
+[x] CI: permissions block, informational audits, DACE evidence/fixture guards (not yet re-run on GitHub)
+[ ] Browser/camera verification of MediaPipe WASM loading under Next.js, delegates, latency -- NOT DONE
+[ ] Pending decisions: R1 (face-api to MediaPipe), R2 (YOLOv8 AGPL), R4 (ethics for pilot), absence handling, PEB hooks
 
 ## Remaining Before Production
 [ ] Download DAiSEE + EngageNet datasets; retrain with real temporal signal (expected: 0.82–0.88 real accuracy)

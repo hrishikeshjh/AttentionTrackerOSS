@@ -1,3 +1,5 @@
+> **Status note (original brief, not a description of the current code).** This is the initial product brief and is kept for history. What differs in the code: face landmarks come from face-api.js (68 points), not MediaPipe FaceMesh (MediaPipe Face Landmarker is used only in the opt-in DACE mode); there is no TensorFlow/Keras `attention_model.h5`: scoring is a weighted rule engine plus an optional ONNX temporal classifier; Firestore logging is **not implemented** (no session data is written to Firestore; Firebase is used for Auth); the data point interval is 1 s, not 5 s; tab-hidden detection exists (`visibilitychange` in `webcam-panel.tsx`) but its 3 s threshold and score penalty were not re-verified. See `v1.0/README.md` and `ARCHITECTURE.md`.
+
 # **App Name**: CognEn: Cognitive Engagement Analyzer
 
 ## Core Features:

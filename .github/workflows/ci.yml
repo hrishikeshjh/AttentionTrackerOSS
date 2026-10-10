@@ -37,8 +37,15 @@ jobs:
           filters: |
             v1:
               - 'v1.0/**'
+              # DACE evidence + cross-language fixtures are generated from
+              # v1.0 code and verified by the v1-test job below.
+              - 'shared/**'
+              - 'docs/proposals/evidence/**'
             v2:
               - 'v2.0/**'
+              # cross-language fixtures read by v2.0/tests (e.g. encode13 vs v1.0)
+              - 'shared/**'
+              - 'docs/proposals/evidence/**'
 
   # ── v1.0 (Next.js / TypeScript) ──────────────────────────────────────────────
   v1-typecheck:
@@ -91,6 +98,20 @@ jobs:
           cache-dependency-path: v1.0/package-lock.json
       - run: npm ci
       - run: npx vitest run
+      # DACE guards (no browser/camera needed):
+      # 1. regenerate the cross-language encode13 fixture from the real v1.0
+      #    code; v2.0 tests read it, so it must never drift from the source.
+      # 2. the vitest run above regenerates legacy_pitch_constants.json from
+      #    scoring/constants.ts; fail if either generated file changed.
+      - run: npx tsx ../shared/fixtures/gen_encode13_fixture.ts
+      - name: Generated evidence/fixtures are up to date
+        run: git diff --exit-code -- ../shared ../docs/proposals/evidence
+      # 3. reproduce the proposal's pitch diagnosis table (numpy only).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install numpy
+      - run: python ../docs/proposals/evidence/pitch_sim.py
 
   v1-build:
     needs: changes
@@ -211,7 +232,9 @@ jobs:
       # it and are excluded; everything else (feature encoding, penalty
       # matrix, temporal consistency, train/val split, CVAT conversion,
       # v1 pipeline logic) runs on this lightweight tier.
-      - run: pip install numpy pytest scikit-learn
+      # onnxruntime enables the ONNX contract checks in
+      # tests/test_cross_language_contract.py (they skip without it).
+      - run: pip install numpy pytest scikit-learn onnxruntime
       - run: pytest tests/ --ignore=tests/test_tracking.py --ignore=tests/test_v2_pipeline.py -v
 
   v2-audit:

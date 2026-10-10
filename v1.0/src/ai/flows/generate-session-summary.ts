@@ -23,6 +23,18 @@ const SessionSummaryInputSchema = z.object({
     .string()
     .describe('The overall engagement level (high, moderate, low).'),
   duration: z.string().describe('The session duration (e.g., 15m).'),
+  // DACE (optional; only sent when the session carries "Unsure" flags)
+  unsureShare: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe('Share (0-1) of the session for which the activity could not be determined. Never a penalty.'),
+  unsureReasons: z
+    .string()
+    .max(300)
+    .optional()
+    .describe('Human-readable reasons with counts, e.g. "desk not visible (12), poor tracking (2)".'),
 });
 
 export type SessionSummaryInput = z.infer<typeof SessionSummaryInputSchema>;
@@ -45,7 +57,7 @@ export async function generateSessionSummary(
 
 const generateSessionSummaryPrompt = ai.definePrompt({
   name: 'generateSessionSummaryPrompt',
-  input: {schema: SessionSummaryInputSchema},
+  input: {schema: SessionSummaryInputSchema.extend({unsurePercent: z.number().optional()})},
   prompt: `You are an AI assistant that generates a session summary report.
 
   Here are the session metrics:
@@ -54,6 +66,9 @@ const generateSessionSummaryPrompt = ai.definePrompt({
   Multitask Events: {{multitaskEvents}}
   Engagement Level: {{engagementLevel}}
   Duration: {{duration}}
+  {{#if unsurePercent}}
+  Undetermined activity: CognEn could not determine the activity for {{unsurePercent}}% of the session{{#if unsureReasons}} (reasons: {{unsureReasons}}){{/if}}. This time is excluded from the average and is not a penalty; mention it neutrally in one sentence.
+  {{/if}}
 
   Please generate a concise summary of the session in a professional tone.
   `,
@@ -66,16 +81,41 @@ const generateSessionSummaryFlow = ai.defineFlow(
     outputSchema: SessionSummaryOutputSchema,
   },
   async input => {
-    const {text} = await generateSessionSummaryPrompt(input);
+    const unsurePercent =
+      input.unsureShare !== undefined && input.unsureShare > 0 ? Math.round(input.unsureShare * 100) : undefined;
+    const {text} = await generateSessionSummaryPrompt({...input, unsurePercent});
 
     // Generate PDF
     const pdf = new jsPDF();
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const maxWidth = pageWidth - 20;
+    const lineHeight = 7;
     pdf.text('Session Summary Report', 10, 10);
     pdf.text(`Average Attention: ${input.averageAttention}%`, 10, 30);
     pdf.text(`Multitask Events: ${input.multitaskEvents}`, 10, 40);
     pdf.text(`Engagement Level: ${input.engagementLevel}`, 10, 50);
     pdf.text(`Duration: ${input.duration}`, 10, 60);
-    pdf.text(`Summary: ${text}`, 10, 80);
+    let y = 80;
+    if (unsurePercent !== undefined) {
+      const unsureLine =
+        `Undetermined: CognEn could not determine the activity for ${unsurePercent}% of the session` +
+        (input.unsureReasons ? ` (${input.unsureReasons})` : '') +
+        '. Excluded from the average; not a penalty.';
+      const lines = pdf.splitTextToSize(unsureLine, maxWidth) as string[];
+      pdf.text(lines, 10, 70);
+      y = Math.max(y, 70 + lines.length * lineHeight + 3);
+    }
+    // Wrap the summary and continue on new pages instead of running off the page.
+    const summaryLines = pdf.splitTextToSize(`Summary: ${text}`, maxWidth) as string[];
+    for (const line of summaryLines) {
+      if (y > pageHeight - 10) {
+        pdf.addPage();
+        y = 15;
+      }
+      pdf.text(line, 10, y);
+      y += lineHeight;
+    }
 
     const reportDataUri = pdf.output('datauristring');
 

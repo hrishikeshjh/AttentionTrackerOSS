@@ -99,17 +99,19 @@ Both v1.0 and v2.0 run on Apple and Windows hardware today; the practical differ
 
 While this system utilizes existing state-of-the-art perception models (e.g., YOLOv8, MediaPipe) for foundational feature extraction, the core scientific contributions lie in the custom algorithmic pipelines and mathematical formulations designed specifically for cognitive engagement monitoring. These contributions resolve critical failure modes documented in state-of-the-art engagement monitoring literature.
 
+> **Honesty banner for this section.** All items below are implemented in code and unit-tested; **none has been measured on real data**. Every "Empirical Proof" figure quoted for items 1-4 (+12.4% precision, +9.1% recall, +18.5% macro-F1, 0.742 to 0.931 temporal consistency, 96.3% occupancy) is a design **target / placeholder**, not a result (see §7). The DACE items (7-10) are likewise targets until measured on pilot set P1 / dataset D1.
+
 ### 1. The Context-Gate Override Algorithm
-A novel post-processing algorithm that intercepts the output of a neural network (the 1D-CNN temporal classifier) and modifies its probabilities based on deterministic spatial heuristics. It resolves behavioral ambiguities by mathematically compressing confidence scores when context is unclear, or artificially boosting/suppressing specific classes (e.g., prioritizing `using_phone` over `attentive_reading` when a phone object and hand interaction are detected in close proximity).
+A novel post-processing algorithm that intercepts the output of a neural network (the 1D-CNN temporal classifier in v2.0; v1.0 has only a rule form, and on v2.0 it never fires by default because hand/object proximity is `hands_not_visible` unless `COGNEN_HAND_PROXIMITY=pose` is set, a wrist-based opt-in that is unvalidated on CCTV) and modifies its probabilities based on deterministic spatial heuristics. It resolves behavioral ambiguities by mathematically compressing confidence scores when context is unclear, or artificially boosting/suppressing specific classes (e.g., prioritizing `using_phone` over `attentive_reading` when a phone object and hand interaction are detected in close proximity).
 **Empirical Proof:** Resolves the biometric ambiguity between visually homologous states, yielding a **+12.4% precision** improvement for `using_phone` and **+9.1% recall** for `attentive_reading`.
 
 ### 2. Asymmetric "ConfusionPenaltyLoss" Function
 An asymmetric loss function algorithm designed to optimize the temporal classifier by minimizing high-cost pedagogical misclassifications. It applies custom mathematical penalties based on the real-world cost of a mistake—for instance, applying a `3.0×` penalty multiplier if the model predicts "reading" when the student is actually hiding a "phone", while applying standard `1.0×` multipliers for less critical errors.
 **Empirical Proof:** Aligns the optimization objective with real-world pedagogical utility, achieving a **+18.5% improvement in macro-F1** over standard cross-entropy.
 
-### 3. Context-Aware Attention Scoring & Multimodal Autoregressive Temporal Fusion
+### 3. Context-Aware Attention Scoring + AR(1) Temporal Fusion
 A multimodal feature fusion algorithm that normalizes and combines 13 disparate signals (including Eye Aspect Ratio, Head Pose, Object One-Hots, and Proximity Codes) under AR(1) temporal dynamics. The algorithm applies specific domain-tuned weights to each feature (e.g., `gazeDeviation: 0.12`, `temporalPattern: 0.03`) and smooths the final 0–100 engagement score over time using an Exponential Moving Average (EMA) with a decay factor of `α=0.15`.
-**Empirical Proof:** Eliminates high-frequency state oscillation, improving temporal consistency from **0.742 to 0.931**.
+**Target (unmeasured):** eliminate high-frequency state oscillation (temporal consistency 0.742 to 0.931 is a placeholder target). On the v1.0 legacy path this item was degraded by the pitch/gaze/detector defects; DACE (item 7) is what makes it functional, behind a flag.
 
 ### 4. Prioritized Seat Mapping Assignment Algorithm (v2.0)
 A specialized spatial algorithm that maps tracked bounding boxes to physical classroom seats in multi-person environments. It utilizes a three-step prioritization logic based on Shapely polygons: (1) Primary validation via centroid containment, (2) Fallback validation using Intersection over Union (IoU ≥ 0.30), and (3) A tie-breaker heuristic for overlapping detections.
@@ -125,15 +127,17 @@ o_i(t) ∈ [0,1] per modality (reuses already-computed sub-scores — zero new s
 d_ij(t) = |o_i(t) − o_j(t)|
 CI(t) = weighted mean of d_ij, EMA-smoothed at α=0.35 (faster than the α=0.15 attention EMA)
 ```
-Implemented identically in `v1.0/src/lib/contradiction-detector.ts` and `v2.0/inference/contradiction_detector.py`, cross-verified to produce matching categorizations on identical inputs. **Empirical status**: computationally free and unit-tested against constructed synthetic conflict cases; full validation (precision/recall of the taxonomy against human-annotated ambiguity) requires labeled modality-conflict data that doesn't exist in DAiSEE/EngageNet — see [§14 Recommended Research Directions](#14-recommended-research-directions--paper-angles) below for how this could become a standalone publishable contribution.
+Implemented in `v1.0/src/lib/contradiction-detector.ts` and ported to `v2.0/inference/contradiction_detector.py` (legacy path only). There is **no automated cross-language check** for CMCV; the two are kept in step by hand. **Empirical status**: computationally free and unit-tested against constructed synthetic conflict cases; full validation (precision/recall of the taxonomy against human-annotated ambiguity) requires labeled modality-conflict data that doesn't exist in DAiSEE/EngageNet — see [§14 Recommended Research Directions](#14-recommended-research-directions--paper-angles) below for how this could become a standalone publishable contribution.
 
 
-### 7-10. DACE contributions (in development, v1.0; see `DACE-IMPLEMENTATION-PLAN.md` and `fixes/`)
-DACE (Downward-Attention Context Engine) adds four contributions on top of items 1-6, bringing the total to **ten**. None is empirically validated yet; all are targets until measured on the pilot set (P1) and dataset (D1). Items 1-6 are retained unchanged; in Stage 2 the Context-Gate may additionally be used as a model input rather than only a hard override, but it remains a named contribution.
+### 7-10. DACE contributions (v1.0 only; implemented and unit-tested, opt-in, not browser-tested; see [ARCHITECTURE.md §11](ARCHITECTURE.md#11-dace-downward-attention-context-engine-v10-only) and [v1.0 README §24](v1.0/README.md#24-dace-downward-attention-context-engine--details))
+DACE (Downward-Attention Context Engine) adds four contributions on top of items 1-6, bringing the total to **ten**. None is empirically validated; nothing has been run in a browser or against a camera (v1.0: 257 Vitest tests; v2.0 light tier 86 pass / 6 skip, neither involves DACE on real media). All accuracy, latency and FDR-DA figures are targets until measured on the pilot set (P1) and dataset (D1). DACE is off by default and does not change the legacy path. Items 1-6 are retained unchanged; in Stage 2 the Context-Gate may additionally be used as a model input rather than only a hard override, but it remains a named contribution.
 7. **Context-conditioned looking-down penalty**: a downward head/eye posture is scored from gaze-corrected eye openness and desk-zone evidence (phone in use, writing, book, desk visibility) instead of a uniform pitch penalty.
 8. **Calibrated abstention with reason codes**: an explicit "Unsure" output (U1-U5; rules in Stage 1, conformal prediction in Stage 2) that holds the engagement score and is reported separately, never as a penalty.
 9. **Webcam eye-kinematics for reading while the head is pitched down** (Stage 2 feasibility study with a pre-registered go/no-go).
-10. **FDR-DA metric and benchmark**: false-distraction rate on attentive reading/note-taking windows.
+10. **FDR-DA metric and benchmark**: false-distraction rate on attentive reading/note-taking windows (share of reading/writing windows labelled distracted, drowsy or phone; computed by `v1.0/scripts/dace/metrics.ts`). Stage 1 targets, unmeasured: FDR-DA reduced by at least 30% relative to baseline with phone recall at least 0.80.
+
+Supporting (not counted) additions: gaze-corrected eye openness/PERCLOS, hand-landmark writing detection, desk-visibility estimate. Item 9 (eye kinematics) is a Stage 2 go/no-go feasibility study and exists only as a stub. Unsure semantics: the score is held, the time is reported separately, never a penalty; reason codes U1-U5. Presets: A, A', A'', B, C, F, H (I = F on desk-out-of-frame segments). Config: `dace.enabled`, `measurement` (`legacy|pnp68|mediapipe`), `evidence`, `rules`, `abstain`, `detector`, `log`, set via `NEXT_PUBLIC_DACE_*` (`NEXT_PUBLIC_DACE_RESEARCH=1` for `/replay` and `?dace=` overrides). YOLOv8 is AGPL-3.0 (research use only, decision R2) versus the Apache-2.0 MediaPipe detector. The pitch defect DACE addresses can be reproduced with `python docs/proposals/evidence/pitch_sim.py` (needs numpy; simulated, not measured).
 
 ---
 
@@ -156,7 +160,7 @@ DACE (Downward-Attention Context Engine) adds four contributions on top of items
 
 - **Context-Aware Attention Scoring:** Distinguishes phone use from book reading via YOLOv8 object detection and MediaPipe hand tracking. The uniform downward-gaze penalty is replaced with context-conditional scoring.
 - **Temporal Behavior Classification:** 1D-CNN sliding-window classifier (15 frames / 3 s) determining 6 classes: `attentive_screen`, `attentive_reading`, `using_phone`, `distracted`, `drowsy`, `absent`.
-- **Context-Gate Override:** Hard-rule post-processor that resolves phone/book ambiguity using object context when the model confidence is below a defined threshold.
+- **Context-Gate Override:** Hard-rule post-processor that resolves phone/book ambiguity using object context when the model confidence is below a defined threshold. (On v2.0 it is inactive by default: it needs `holding_*` proximity, which exists only with `COGNEN_HAND_PROXIMITY=pose`.)
 - **Multi-Person Room Analytics (v2.0):** Per-seat occupancy tracking with Shapely polygon IoU, ByteTrack persistent IDs, and a room-level attention heatmap.
 - **Flexible Video Input (v2.0):** RTSP CCTV streams, local video files, USB/built-in cameras via a unified `FrameSource` abstraction with configurable frame-skipping.
 - **Chrome Extension (v1.0):** Manifest V3 extension that works inside Google Meet / Zoom / Teams via an offscreen document.
@@ -184,7 +188,7 @@ flowchart LR
     J --> K[Context-Gate\nOverride]
     K --> L[MLEngine\nContext-Aware Scoring\nEMA α=0.15]
     L --> M[Attention Score 0–100\nBehavior Label]
-    M --> N[Dashboard\n+ Firebase + PDF]
+    M --> N[Dashboard\n+ optional PDF report]
 ```
 
 ### 3.2 v2.0 — Server Pipeline
@@ -273,7 +277,7 @@ The target hybrid dataset comprises **55,100 annotated temporal sequences** (15 
 | Object detection    | YOLOv8-nano ONNX via `onnxruntime-web` (WebGPU → WASM) |
 | Hand tracking       | MediaPipe Hands Lite (`@mediapipe/hands`)              |
 | Temporal classifier | Rule-based + ONNX 1D-CNN                               |
-| Auth / Storage      | Firebase Auth + Firestore                              |
+| Auth / Storage      | Firebase Auth (Firestore initialised but unused)       |
 | AI report           | Google Genkit + Gemini (PDF generation)                |
 | Extension           | Chrome MV3 + offscreen document                        |
 
@@ -400,7 +404,7 @@ Two baseline paradigms the architecture is intended to beat, pending real evalua
 2. **Deterministic Spatial Heuristic:** a non-parametric, rule-based frame-wise evaluator, expected to plateau well below the learned model, especially under occlusion/object-detector failures.
 
 ### 7.3 Ablation Study (Targets, not yet run)
-Three ablations are planned to isolate each algorithmic module's real contribution once a real, subject-disjoint test set exists — removing Context-Gate Override, removing the Asymmetric ConfusionPenaltyLoss, and removing AR(1) temporal autocorrelation. None of these have been run against real data; any percentage deltas quoted for them prior to that point are design targets, not results.
+Three ablations are planned for the v2.0 classifier (removing Context-Gate Override, the Asymmetric ConfusionPenaltyLoss, and AR(1) temporal autocorrelation) once a real, subject-disjoint test set exists; separate DACE presets A/A'/A''/B/C/F/H/I cover the v1.0 ablations. All percentages quoted for them are unmeasured targets. None of these have been run against real data; any percentage deltas quoted for them prior to that point are design targets, not results.
 
 ---
 
@@ -472,7 +476,7 @@ For full REST API and WebSocket documentation, view the [v2.0 README](v2.0/READM
 
 ```bash
 cd v2.0
-python3 -m pytest tests/ -v
+python3 -m pytest tests/ -v   # light tier: 86 pass / 6 skip; includes cross-language contract, hand-proximity and pitch-characterisation tests
 ```
 
 ### v2.0 — Evaluation Suite
@@ -486,6 +490,7 @@ python3 v2.0/evaluation/evaluate.py --model v2.0/models/behavior_classifier_v2.o
 ```bash
 cd v1.0
 npm run typecheck && npm run lint
+npm test        # Vitest, 257 tests (legacy-equivalence golden fixtures + DACE suites; browser libs mocked)
 ```
 
 ---
@@ -494,8 +499,9 @@ npm run typecheck && npm run lint
 
 1. **No Raw Video Stored:** Only derived feature vectors and metrics are persisted.
 2. **On-Premise:** All inference runs locally (in-browser for v1.0, on local GPU for v2.0).
-3. **Anonymization:** Track IDs are used by default in v2.0.
-4. **Data Retention:** Analytics auto-purge after 24 hours.
+3. **Anonymization:** v2.0 uses track IDs only; no name mapping is implemented.
+4. **Data Retention:** Auto-purge is **not implemented**: `DATA_RETENTION_HOURS` (24 h) exists in `v2.0/server/config.py` but nothing reads it. v1.0 DACE evaluation logs are manual-download only and have no retention limit yet.
+5. **Cloud calls:** v1.0 report export sends derived session statistics (no frames) to Gemini via Genkit; nothing is written to Firestore.
 
 ---
 
@@ -552,8 +558,8 @@ The framework was benchmarked against two established baseline paradigms:
 
 **Q3. What is the impact on overall performance when individual components (e.g., Context-Gate Override Algorithm, Asymmetric ConfusionPenaltyLoss Function) are removed or modified?**
 > *(Template answer — targets, not measured. The three ablations described here are now fully specified and ready to run for real: `v2.0/evaluation/evaluate.py` no longer fabricates results, and `v2.0/training/penalty_matrix.py` provides the complete 30-pair matrix needed to run the "−ConfusionPenaltyLoss" condition meaningfully. See Q11 and §14.)*
-A comprehensive ablation study isolated the quantitative penalties of removing key algorithmic modules:
-*   **Context-Gate Override:** Removing this module reintroduced severe biometric ambiguities between visually homologous states (e.g., reading a book vs. texting in lap), equating to a **12.4% penalty in `using_phone` precision** and a **9.1% penalty in `attentive_reading` recall**.
+A planned ablation study is intended to isolate the quantitative penalties of removing key algorithmic modules. **The percentages below are unmeasured targets, not results; the studies have not been run:**
+*   **Context-Gate Override (target, unmeasured; the gate is inactive by default on v2.0):** Removing this module reintroduced severe biometric ambiguities between visually homologous states (e.g., reading a book vs. texting in lap), equating to a **12.4% penalty in `using_phone` precision** and a **9.1% penalty in `attentive_reading` recall**.
 *   **Asymmetric ConfusionPenaltyLoss:** Reverting to standard cross-entropy removed the optimization of pedagogical edge-cases, leading to an **18.5% drop in macro-F1**.
 *   **AR(1) Temporal Autocorrelation:** Removing realistic temporal variance forced the model to flicker between transient states, dropping temporal consistency from **0.931 to 0.742**.
 
@@ -565,7 +571,7 @@ The empirical validation utilized a hybrid dataset comprising **55,100 annotated
 *   **Testing Split:** 3,000 unaugmented windows (500 per class) generated via an independent seed (`seed=43`) to strictly prevent data leakage.
 
 **Q5. How do each of the proposed algorithms specifically improve the system's performance, and what are the specific challenges they address?**
-*   **Context-Gate Override Algorithm:** Addresses the challenge of biometric ambiguity (e.g., distinguishing reading from hidden device usage) by mathematically compressing or boosting probabilistic outputs based on deterministic spatial heuristics. 
+*   **Context-Gate Override Algorithm (inactive by default on v2.0):** Addresses the challenge of biometric ambiguity (e.g., distinguishing reading from hidden device usage) by mathematically compressing or boosting probabilistic outputs based on deterministic spatial heuristics. 
 *   **Asymmetric ConfusionPenaltyLoss:** Addresses the limitation of standard loss functions treating all errors equally. It improves pedagogical utility by applying severe algorithmic penalties to high-cost misclassifications (e.g., a `3.0×` penalty multiplier if the model predicts "reading" when the student is actually using a "phone").
 *   **AR(1) Temporal Autocorrelation & EMA Smoothing:** Addresses the challenge of high-frequency state oscillation (flickering) by forcing the classification engine to learn sustained behavioral continuity rather than reacting to transient frame-level noise.
 *   **Prioritized Seat Mapping (v2.0):** Addresses tracking identity fragmentation in dense environments by decoupling transient bounding-box IDs from persistent physical identities via Shapely polygon IoU validation.
@@ -585,12 +591,12 @@ The proposed CognEn framework was benchmarked against two established baseline p
 1.  **Naive Temporal 1D-CNN (Ablated Architecture):** A 1D-CNN with an identical network topology trained exclusively on uniformly-distributed temporal sequences, stripped of class-discriminating AR(1) autoregressive signals. This baseline achieved a peak validation accuracy of just **21.3%** — marginally above the 16.7% random-chance floor for a 6-class problem — demonstrating that network capacity alone is insufficient without structured temporal representation.
 2.  **Deterministic Spatial Heuristic Engine:** A non-parametric, rule-based inference engine performing frame-wise evaluation of spatial features (head pose, gaze deviation, EAR thresholds) without any temporal modeling, object context, or learned classification. This achieved an overall accuracy of **80.8%**, but exhibited severe classification degradation under complex spatial conditions (partial occlusions, object-detector failures), particularly for visually homologous states such as `attentive_reading` vs. `using_phone`.
 
-The proposed system surpasses both baselines with a test accuracy of **86.5%** and a macro-F1 of **0.852**, closing the gap beyond the rule-based ceiling (80.8%) through the novel algorithmic contributions listed above (the ablations below isolate three of them: Context-Gate Override, ConfusionPenaltyLoss and AR(1) temporal fusion).
+The proposed system surpasses both baselines with a test accuracy of **86.5%** and a macro-F1 of **0.852**, closing the gap beyond the rule-based ceiling (80.8%) through the novel algorithmic contributions listed above (the planned v2.0 ablations isolate three of the ten: Context-Gate Override, ConfusionPenaltyLoss and AR(1) temporal fusion; the DACE items 7-10 are covered by the presets in §7-10 above).
 
 **Q8. Please provide a clear and concise problem statement.**
 Existing automated student engagement monitoring systems fail to disambiguate visually homologous behavioral states — specifically, distinguishing a student reading a physical textbook from one covertly using a mobile device — because they rely on uniform spatial heuristics that apply identical penalties to any downward head pitch, regardless of contextual evidence. This misclassification is pedagogically costly: falsely penalizing attentive reading suppresses educator trust in automated analytics, while failing to detect phone usage undermines the system's utility as a classroom management tool. Furthermore, single-frame inference methods are inherently susceptible to transient noise and behavioral flickering; current systems lack the temporal depth to distinguish a momentary gaze shift from a sustained distraction episode, and existing loss functions treat all misclassification errors as equal-cost, misaligning model optimization with real-world pedagogical consequences.
 
-This paper presents **CognEn**, a real-time cognitive engagement monitoring framework that resolves these limitations through novel algorithmic contributions, three of which are central to the classifier: (1) a **Context-Gate Override Algorithm** for biometric ambiguity resolution, (2) an **Asymmetric ConfusionPenaltyLoss** function for pedagogically-weighted optimization, and (3) a **Multimodal Autoregressive Temporal Fusion** architecture for temporally consistent behavioral inference — deployed across both a single-student webcam environment (v1.0) and a multi-student CCTV classroom environment (v2.0).
+This paper presents **CognEn**, a real-time cognitive engagement monitoring framework that resolves these limitations through novel algorithmic contributions (ten in total, see above), three of which are central to the v2.0 classifier: (1) a **Context-Gate Override Algorithm** for biometric ambiguity resolution, (2) an **Asymmetric ConfusionPenaltyLoss** function for pedagogically-weighted optimization, and (3) a **Multimodal Autoregressive Temporal Fusion** architecture for temporally consistent behavioral inference — deployed across both a single-student webcam environment (v1.0) and a multi-student CCTV classroom environment (v2.0).
 
 **Q9. What is the name and size of the dataset used in your experiments? Please provide details on preprocessing, splits, and any other relevant information.**
 > *(Template answer — the "CognEn Hybrid Behavioral Temporal Dataset" as described has not been assembled; see [§4.4](#44-dataset-specification--preprocessing-target-composition). The preprocessing/splitting **methodology** described below is sound and implemented — e.g. the split-by-subject-not-by-window fix in `train_classifier.py`'s `GroupShuffleSplit` — it just hasn't been run against 55,100 real sequences.)*
@@ -663,10 +669,10 @@ If the goal is one real, defensible published contribution as fast as possible: 
 
 | Scope | Checks |
 |---|---|
-| v1.0 | `npm run typecheck`, `npm run lint` (ESLint, `eslint.config.mjs` — previously no config existed), `npx vitest run`, `npm run build` (previously would succeed even with type/lint errors due to now-removed `ignoreBuildErrors`/`ignoreDuringBuilds` flags), `npm audit --audit-level=high` (regression guard on the 0-critical/0-high state reached by a dependency cleanup pass) |
-| v2.0 | `ruff check .` (previously no lint config existed), `mypy .` (informational only — `continue-on-error: true`, given a pre-existing, individually-verified-benign backlog of ~26 findings from the first pass), the lightweight pytest tier (`numpy`/`pytest`/`scikit-learn` only — excludes torch/opencv/ultralytics-dependent tests), `pip-audit` against the now-pinned `requirements.txt` |
+| v1.0 | `npm run typecheck`, `npm run lint` (ESLint, `eslint.config.mjs` — previously no config existed), `npx vitest run`, `npm run build` (previously would succeed even with type/lint errors due to now-removed `ignoreBuildErrors`/`ignoreDuringBuilds` flags), an **informational** `npm audit --audit-level=high` (`continue-on-error`; advisories appear daily), plus DACE guards in the test job: regenerate `shared/fixtures/encode13_cross_language.json`, `git diff --exit-code` on `shared/` and `docs/proposals/evidence/`, and `python docs/proposals/evidence/pitch_sim.py` (numpy only) |
+| v2.0 | `ruff check .` (previously no lint config existed), `mypy .` (informational only — `continue-on-error: true`, given a pre-existing, individually-verified-benign backlog of ~26 findings from the first pass), the lightweight pytest tier (`numpy`/`pytest`/`scikit-learn` only — excludes torch/opencv/ultralytics-dependent tests), an **informational** `pip-audit --no-deps --disable-pip` on `requirements.txt` (the file is not currently resolvable, so it audits pins as written) |
 | Repo-wide | Secret scanning via `gitleaks` |
 
-A final `all-checks-passed` job aggregates every job's result (treating a path-filtered-out/skipped job as passing) into one required status check, so branch protection only needs to reference a single job rather than every individual check.
+The workflow sets top-level `permissions: contents: read, pull-requests: read` (required by paths-filter and gitleaks on PRs); the path filter treats `shared/**` and `docs/proposals/evidence/**` as both v1 and v2 changes. The workflow has not been re-run on GitHub since these changes. A final `all-checks-passed` job aggregates every job's result (treating a path-filtered-out/skipped job as passing) into one required status check, so branch protection only needs to reference a single job rather than every individual check.
 
 **Dependency hygiene**: `v1.0`'s `npm audit` findings went from 107 (6 critical, 22 high) to 35 (0 critical, 0 high) via `npm audit fix`, targeted version bumps, and `package.json` `overrides` for transitive dependencies pulled in by `genkit`. The redundant `yarn.lock` — checked in alongside `package-lock.json` for the same `package.json`, causing GitHub's Dependabot to scan both and roughly double-count the same underlying issues — was removed. `v2.0`'s `server/requirements.txt` is now pinned with `==` rather than `>=` (every pin verified to exist on PyPI) for reproducible installs.

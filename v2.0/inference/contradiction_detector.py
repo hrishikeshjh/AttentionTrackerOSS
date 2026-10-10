@@ -3,9 +3,11 @@ Cross-Modal Contradiction Vector (CMCV) -- Python port.
 
 Canonical spec + rationale: v1.0/src/lib/contradiction-detector.ts. Ported
 here rather than re-derived so both surfaces produce the same taxonomy for
-the same underlying signals; keep them in sync by hand (see
-v1.0/src/lib/scoring/EQUIVALENCE.md for the cross-language sync process this
-project uses for the scoring core -- the same discipline applies here).
+the same underlying signals; keep them in sync by hand. There is no
+automated cross-language check for this module (no EQUIVALENCE.md exists).
+Note: v1.0's opt-in DACE mode feeds its scoring with DACE-substituted
+measurements (ARCHITECTURE.md §11.9); this port corresponds to the v1.0
+legacy path (DACE off) only.
 
 Additive: called from RoomAnalyzer._analyze_person alongside the behavior
 classifier, exposed as sibling fields on the per-person result dict, never

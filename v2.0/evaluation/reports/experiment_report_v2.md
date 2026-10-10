@@ -1,4 +1,7 @@
 # CognEn v2.0 — Experiment 2 Report
+
+> **CAUTION (added after the fact): circular evaluation.** The 1.000 scores below come from a model trained and tested on the same hand-written synthetic generator (different seeds), so they say nothing about real-world accuracy. The report predates the pipeline corrections (v2.0/README.md §23); the committed `eval_20260309_*.json` files are pre-fix outputs. The server loads `behavior_classifier.onnx` (Experiment 1), not `behavior_classifier_v2.onnx`. All figures are targets-in-waiting until measured on dataset D1 / real footage. DACE is v1.0-only and does not apply here.
+
 **Date**: 2026-03-09
 **Run**: Realistic class-conditional synthetic training (proxy for DAiSEE + EngageNet)
 **Model**: `models/behavior_classifier_v2.onnx` — BehaviorClassifierCNN (20,550 params, trained 16 epochs on 42,600 realistic synthetic windows, early stopping at patience=15)

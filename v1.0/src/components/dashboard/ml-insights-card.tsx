@@ -15,6 +15,16 @@ import {
     Timer
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { UNSURE_REASON_TEXT } from '@/lib/scoring/dace/abstain';
+
+const LABEL_TEXT: Record<string, string> = {
+    attentive_screen: 'Attentive (screen)',
+    attentive_reading: 'Attentive (reading / writing)',
+    using_phone: 'Using phone',
+    distracted: 'Distracted',
+    drowsy: 'Drowsy',
+    absent: 'Absent',
+};
 
 interface MLInsightsCardProps {
     prediction: MLPrediction | null;
@@ -156,6 +166,31 @@ export default function MLInsightsCard({ prediction, analytics, sessionActive }:
                     </div>
                 ) : (
                     <>
+                        {/* DACE behaviour label / rule / Unsure reason */}
+                        {prediction?.scoringMode === 'dace' && (
+                            <div className="space-y-1 rounded-md border px-3 py-2">
+                                <div className="flex items-center justify-between text-sm">
+                                    <span className="text-muted-foreground">Activity (DACE)</span>
+                                    <span className={cn('font-medium', prediction.unsure ? 'text-yellow-500' : '')}>
+                                        {prediction.unsure
+                                            ? 'Undetermined'
+                                            : prediction.daceLabel
+                                                ? LABEL_TEXT[prediction.daceLabel] ?? prediction.daceLabel
+                                                : '—'}
+                                    </span>
+                                </div>
+                                {prediction.unsure && prediction.unsureReason && (
+                                    <div className="text-xs text-muted-foreground">
+                                        {prediction.unsureReason}: {UNSURE_REASON_TEXT[prediction.unsureReason]}
+                                        {prediction.scoreHeld ? ' · score held, not penalised' : ' · no score yet'}
+                                    </div>
+                                )}
+                                {prediction.daceRule && (
+                                    <div className="text-xs text-muted-foreground font-mono">rule: {prediction.daceRule}</div>
+                                )}
+                            </div>
+                        )}
+
                         {/* Confidence Meter */}
                         {prediction && (
                             <ConfidenceMeter confidence={prediction.confidence} />
@@ -235,7 +270,7 @@ export default function MLInsightsCard({ prediction, analytics, sessionActive }:
                                         prediction.rawScore >= 70 ? 'text-green-500' :
                                             prediction.rawScore >= 40 ? 'text-yellow-500' : 'text-red-500'
                                     )}>
-                                        {prediction.rawScore}
+                                        {prediction.unsure && !prediction.scoreHeld ? '—' : prediction.rawScore}
                                     </span>
                                 </div>
                             </div>

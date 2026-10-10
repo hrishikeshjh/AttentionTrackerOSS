@@ -12,6 +12,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from features.hand_proximity import parse_hand_proximity_source
+
 load_dotenv()
 
 # room_id flows directly into filesystem paths (load_seat_map below) and
@@ -61,21 +63,39 @@ PROCESS_EVERY_N_FRAMES  = int(os.getenv("COGNEN_PROCESS_EVERY_N", "1"))
 # RTSP transport protocol: "tcp" (reliable) or "udp" (lower latency, packet loss risk)
 RTSP_TRANSPORT          = os.getenv("COGNEN_RTSP_TRANSPORT", "tcp")
 
-# OpenCV internal buffer size for live sources (1 = always read the newest frame)
+# OpenCV internal buffer size for live sources (1 = always read the newest frame).
+# NOT WIRED: nothing reads this; frame_source.py sources take their own
+# `buffer_size` argument (default 1), so COGNEN_CAMERA_BUFFER has no effect.
 CAMERA_BUFFER_SIZE      = int(os.getenv("COGNEN_CAMERA_BUFFER", "1"))
 
 PERSON_CONF_THRESHOLD  = 0.40   # YOLOv8 person detection confidence
 OBJECT_CONF_THRESHOLD  = 0.25   # Object detection confidence
 POSE_CONF_THRESHOLD    = 0.40   # Keypoint confidence
 SEAT_IOU_THRESHOLD     = 0.30   # IoU to assign a person to a seat
-HAND_PROXIMITY_NORM    = 0.20   # Normalised distance threshold (same as v1.0)
+HAND_PROXIMITY_NORM    = 0.20   # wrist-to-object distance threshold, as a fraction of the
+                                # person box (v1.0 legacy threshold); used only when
+                                # HAND_PROXIMITY_SOURCE == "pose" (features/hand_proximity.py)
 
-# ── Attention thresholds (mirrors v1.0 ml-engine.ts) ────────────────────────
+# Source of the per-person hand/object proximity label:
+#   "off"  (default) -- "hands_not_visible" for everyone, i.e. the historical
+#          behaviour; the Context-Gate Override and the CMCV "manual" opinion
+#          never see a holding_* label.
+#   "pose" -- derive it from YOLOv8-pose wrists + the person's object boxes
+#          (features/hand_proximity.py). Unvalidated on CCTV footage; opt-in.
+HAND_PROXIMITY_SOURCE  = parse_hand_proximity_source(os.getenv("COGNEN_HAND_PROXIMITY", "off"))
+
+# ── Reference values from v1.0 (NOT USED by v2.0 code) ───────────────────────
+# v2.0 has no per-person MLEngine/EMA and no attention-state thresholds: the
+# per-person attention_score is a fixed lookup of the behavior label
+# (inference/behavior_classifier.py ATTENTION_SCORES) and room_attention is
+# their plain mean. The window size actually used is
+# behavior_classifier.WINDOW_SIZE. These constants record the v1.0 legacy
+# values (ml-engine.ts thresholds, EMA alpha) for a future port; changing
+# them has no effect today. v1.0's opt-in DACE mode adds "Unsure"/score-hold
+# semantics (ARCHITECTURE.md §11.7) that v2.0 does not implement.
 
 ATTENTIVE_MIN  = 70
 DISTRACTED_MIN = 40
-
-# ── Temporal classifier ──────────────────────────────────────────────────────
 
 TEMPORAL_WINDOW_SIZE = 15       # frames (3 s at 5 FPS)
 EMA_ALPHA            = 0.15
@@ -110,6 +130,9 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 WS_PATH  = "/ws/room/{room_id}"
 
 # ── Privacy settings ─────────────────────────────────────────────────────────
+# NOT ENFORCED: nothing reads these two constants. Output is anonymous only
+# because v2.0 has no identity mapping at all (results carry track IDs), and
+# there is no persistence layer to purge; no retention job exists.
 
-ANONYMISE_BY_DEFAULT = True     # Use track IDs instead of names unless mapped
-DATA_RETENTION_HOURS = 24       # Auto-purge analytics after N hours
+ANONYMISE_BY_DEFAULT = True     # intended: use track IDs instead of names unless mapped
+DATA_RETENTION_HOURS = 24       # intended: auto-purge analytics after N hours

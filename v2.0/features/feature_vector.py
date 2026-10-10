@@ -35,6 +35,13 @@ Canonical feature vector (FEATURE_DIM = 13, index order fixed):
     10 has_none         {0, 1}
     11 fidget           [ 0, 1]   fidget score / 100
     12 proximity_code   {0.00, 0.25, 0.50, 0.75, 1.00}
+
+Cross-language: indices 0-11 equal v1.0 encode13
+(v1.0/src/lib/scoring/dace/feature-vector.ts). Index 12 equals v1.0's ONNX
+input path (temporal-classifier.ts PROXIMITY_CODES_V2), NOT v1.0's rule-layer
+codes (PROXIMITY_CODES_V1). Checked by tests/test_cross_language_contract.py
+against shared/fixtures/encode13_cross_language.json (generated from the
+TypeScript).
 """
 
 from __future__ import annotations

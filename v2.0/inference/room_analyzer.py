@@ -32,6 +32,7 @@ from features.face_metrics import (
     calculate_head_pose,
     calculate_mar,
 )
+from features.hand_proximity import estimate_hand_proximity
 from inference.behavior_classifier import BehaviorClassifier, BehaviorResult
 from inference.contradiction_detector import ContradictionDetector
 from input.frame_source import FrameSource, RTSPSource
@@ -41,6 +42,8 @@ from perception.person_detector import PersonDetector
 from perception.pose_estimator import PoseDetection, PoseEstimator
 from server.config import (
     BEHAVIOR_CLASSIFIER_MODEL,
+    HAND_PROXIMITY_NORM,
+    HAND_PROXIMITY_SOURCE,
     INPUT_HEIGHT,
     INPUT_WIDTH,
     PROCESS_EVERY_N_FRAMES,
@@ -240,7 +243,8 @@ class RoomAnalyzer:
         fh_total, fw_total = frame.shape[:2]
         bbox_face_area = ((x2 - x1) * (y2 - y1)) / max(fw_total * fh_total, 1)
 
-        # Face landmarks (placeholder — integrate face_alignment / dlib here)
+        # Face landmarks: MediaPipe FaceLandmarker on the whole person crop,
+        # mapped to 68 points (perception/face_landmarks.py _MP_TO_68).
         landmarks = self._get_landmarks(face_crop)
 
         if landmarks:
@@ -282,7 +286,16 @@ class RoomAnalyzer:
         person_pose = self._nearest_pose(track.bbox_xyxy, pose_dets)
         posture = PoseEstimator.analyze_posture(person_pose) if person_pose else None
 
-        hand_proximity = "hands_not_visible"  # extend with HandTracker if needed
+        # Default ("off"): historical behaviour, no hand evidence. "pose":
+        # wrists from YOLOv8-pose vs this person's object boxes
+        # (features/hand_proximity.py; opt-in, unvalidated on CCTV).
+        if HAND_PROXIMITY_SOURCE == "pose" and person_pose is not None:
+            hand_proximity = estimate_hand_proximity(
+                person_pose.keypoints, track.bbox_xyxy, person_objs,
+                max_dist=HAND_PROXIMITY_NORM,
+            )
+        else:
+            hand_proximity = "hands_not_visible"
         behavior = state.behavior_clf.update({
             "metrics": metrics,
             "detected_objects": person_objs,

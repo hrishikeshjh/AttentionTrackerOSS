@@ -10,7 +10,14 @@ The exported ONNX model:
     - Input  : "input"  — float32 (batch, FEATURE_DIM, WINDOW_SIZE) = (B, 13, 15)
     - Output : "logits" — float32 (batch, NUM_CLASSES) = (B, 6)
     - Dynamic batch dimension for use in onnxruntime (Python) and
-      onnxruntime-web (browser / v1.0 TemporalBehaviorClassifier).
+      onnxruntime-web (browser / v1.0 TemporalBehaviorClassifier.loadModel,
+      whose defaults match this contract: input 'input', channels-first
+      (1, 13, 15), output 'logits' + softmax, v2.0 proximity codes).
+      Contract pinned by tests/test_cross_language_contract.py. Caveat: in
+      v1.0 DACE mode the pitch/gaze_y fed to the model are negated DACE
+      values (degrees, down = negative; ARCHITECTURE.md §11.8), not this repo's
+      68-point legacy formula, so the input distributions differ across the
+      two surfaces; no model has been trained on real data for either.
 
 ONNX opset: 17 (supported by onnxruntime ≥ 1.15 and onnxruntime-web ≥ 1.16).
 """
