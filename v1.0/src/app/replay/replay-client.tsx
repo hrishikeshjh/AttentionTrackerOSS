@@ -25,6 +25,7 @@ import { configHash, resolveDaceConfig, DEFAULT_DACE_CONFIG } from '@/lib/dace/c
 import { EvalLogger } from '@/lib/dace/eval-log';
 import { FileSource } from '@/lib/dace/replay/frame-source';
 import { MLEngine } from '@/lib/ml-engine';
+import { engineOptionsForPreset } from './engine-options';
 import type { ExtendedFaceMetrics } from '@/lib/types';
 
 const PRESET_IDS = Object.keys(DACE_PRESETS) as DacePresetId[];
@@ -63,7 +64,7 @@ async function runLegacy(preset: DacePresetId, file: File, level: 'windows' | 'f
   const proximity = new HandObjectProximityDetector();
   const selector = new PrimaryFaceSelector();
   const temporal = new TemporalBehaviorClassifier();
-  const ml = new MLEngine();
+  const ml = new MLEngine(engineOptionsForPreset(preset));
   logger.log('session', 0, { preset, source: 'file', config: cfg, objectModelLoaded: od.isLoaded(), pipeline: 'legacy' });
 
   const src = await FileSource.open(file, 200);
@@ -114,7 +115,7 @@ async function runDace(preset: DacePresetId, file: File, level: 'windows' | 'fra
   const { engine, logger } = await createDaceEngine(resolved, { logLevel: level });
   const log = logger as EvalLogger;
   log.log('session', 0, { preset, source: 'file', pipeline: 'dace' });
-  const ml = new MLEngine();
+  const ml = new MLEngine(engineOptionsForPreset(preset));
   const src = await FileSource.open(file, engine.params.frameIntervalMs);
   try {
     let k = 0;

@@ -222,7 +222,7 @@ export type MLPrediction = {
   // downstream consumers decide what to do with disagreement, it isn't
   // averaged away before it reaches them.
   contradictionIndex?: number; // 0-1, EMA-smoothed
-  contradictionCategory?: 'coherent' | 'fatigue_masking' | 'prop_without_engagement' | 'context_conflict';
+  contradictionCategory?: 'coherent' | 'fatigue_masking' | 'prop_without_engagement' | 'context_conflict' | 'unclassified';
 
   // ── DACE (optional; only set on the DACE scoring path) ──
   scoringMode?: ScoringMode;
@@ -242,7 +242,13 @@ export type SessionAnalytics = {
   trendSlope: number; // positive = improving
   peakAttentionPeriods: Array<{ start: number; end: number; avgScore: number }>;
   lowAttentionPeriods: Array<{ start: number; end: number; avgScore: number }>;
-  blinkAnomalies: number; // count of abnormal blink patterns
+  /**
+   * @deprecated Misnamed: this is the number of sharp attention-score drops
+   * (> 30 points between consecutive points), not a blink measure. Kept under
+   * the old name because the legacy golden fixture freezes analyze()'s output;
+   * use SessionAnalyticsEngine.getAnomalies().scoreDropCount.
+   */
+  blinkAnomalies: number;
   fatigueOnset: number | null; // timestamp when fatigue detected
   optimalEngagementWindow: { start: number; end: number } | null;
   attentionVariability: number; // standard deviation of scores

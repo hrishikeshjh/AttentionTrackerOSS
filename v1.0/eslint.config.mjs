@@ -18,7 +18,6 @@ const eslintConfig = [
       'out/**',
       'build/**',
       'extension/lib/face-api*.js',
-      'extension/lib/ml-core.js',
     ],
   },
 ];

@@ -68,3 +68,39 @@ describe('BlinkDetector', () => {
     expect(result.blinkDetected).toBe(false);
   });
 });
+
+describe('BlinkDetector clock', () => {
+  // Two blinks 10 s apart, then query 20 s after the first.
+  function feed(d: BlinkDetector, t0: number) {
+    let last = { blinkRate: 0 };
+    const seq: Array<[number, number]> = [
+      [0, 0.3], [200, 0.1], [400, 0.3],
+      [10000, 0.3], [10200, 0.1], [10400, 0.3],
+      [20000, 0.3],
+    ];
+    for (const [dt, ear] of seq) last = d.detectBlink(ear, t0 + dt);
+    return last.blinkRate;
+  }
+
+  it("'frame' clock is independent of the wall clock", () => {
+    const t0 = 1_000_000;
+    const rate = feed(new BlinkDetector('frame'), t0);
+    // 2 blinks over min(60 s, 20000 - 400) ms
+    expect(rate).toBeCloseTo((2 / 19600) * 60000, 9);
+  });
+
+  it("default ('wall') keeps using Date.now() (historical behaviour)", () => {
+    const t0 = 1_000_000;
+    const wall = new BlinkDetector();
+    // Date.now() is far in the future relative to t0, so every blink is older than 60 s
+    expect(feed(wall, t0)).toBe(0);
+  });
+
+  it('getBlinkRate(now) accepts an explicit reference time', () => {
+    const d = new BlinkDetector('frame');
+    const t0 = 5_000_000;
+    feed(d, t0);
+    expect(d.getBlinkRate(t0 + 20000)).toBeCloseTo((2 / 19600) * 60000, 9);
+    expect(d.getBlinkRate(t0 + 200000)).toBe(0);
+  });
+});

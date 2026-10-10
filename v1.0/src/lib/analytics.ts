@@ -150,42 +150,53 @@ function detectFatigueOnset(data: SessionDataPoint[]): number | null {
 
 // ==================== ANOMALY DETECTION ====================
 
-interface AnomalyResult {
-    blinkAnomalies: number;
-    anomalyTimestamps: number[];
+/** Drop between consecutive points (score units) counted as a sharp drop. */
+const SCORE_DROP_THRESHOLD = 30;
+
+/**
+ * Anomalies in the attention-score series. Nothing here looks at blinks:
+ * the SessionAnalytics field `blinkAnomalies` has always held
+ * `scoreDropCount` (it is kept under its old name only because the legacy
+ * golden fixture freezes analyze()'s output); use getAnomalies() instead.
+ */
+export interface AnomalyResult {
+    /** consecutive-point drops larger than SCORE_DROP_THRESHOLD */
+    scoreDropCount: number;
+    /** timestamp of the point at the bottom of each sharp drop */
+    scoreDropTimestamps: number[];
+    /** points whose |z-score| exceeds ANOMALY_STD_THRESHOLD */
+    outlierTimestamps: number[];
 }
 
 /**
- * Detect anomalies in session data
+ * Detect anomalies in session data (needs >= 10 points).
  */
 function detectAnomalies(data: SessionDataPoint[]): AnomalyResult {
     if (data.length < 10) {
-        return { blinkAnomalies: 0, anomalyTimestamps: [] };
+        return { scoreDropCount: 0, scoreDropTimestamps: [], outlierTimestamps: [] };
     }
 
     const scores = data.map(d => d.attentionScore);
     const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
     const stdDev = calculateStdDev(scores);
 
-    const anomalyTimestamps: number[] = [];
-
+    const outlierTimestamps: number[] = [];
     for (const point of data) {
         const zScore = Math.abs(point.attentionScore - mean) / (stdDev || 1);
         if (zScore > ANOMALY_STD_THRESHOLD) {
-            anomalyTimestamps.push(point.timestamp);
+            outlierTimestamps.push(point.timestamp);
         }
     }
 
-    // Count significant drops as blink anomalies
-    let blinkAnomalies = 0;
+    const scoreDropTimestamps: number[] = [];
     for (let i = 1; i < data.length; i++) {
         const drop = data[i - 1].attentionScore - data[i].attentionScore;
-        if (drop > 30) {
-            blinkAnomalies++;
+        if (drop > SCORE_DROP_THRESHOLD) {
+            scoreDropTimestamps.push(data[i].timestamp);
         }
     }
 
-    return { blinkAnomalies, anomalyTimestamps };
+    return { scoreDropCount: scoreDropTimestamps.length, scoreDropTimestamps, outlierTimestamps };
 }
 
 // ==================== OPTIMAL WINDOW DETECTION ====================
@@ -281,8 +292,8 @@ export class SessionAnalyticsEngine {
         // Detect fatigue
         const fatigueOnset = detectFatigueOnset(data);
 
-        // Detect anomalies
-        const { blinkAnomalies } = detectAnomalies(data);
+        // Score anomalies (stored under the historical field name, see AnomalyResult)
+        const { scoreDropCount } = detectAnomalies(data);
 
         // Find optimal window
         const optimalEngagementWindow = findOptimalWindow(data);
@@ -296,12 +307,20 @@ export class SessionAnalyticsEngine {
             trendSlope: slope,
             peakAttentionPeriods,
             lowAttentionPeriods,
-            blinkAnomalies,
+            blinkAnomalies: scoreDropCount,
             fatigueOnset,
             optimalEngagementWindow,
             attentionVariability,
             ...extra,
         };
+    }
+
+    /**
+     * Score anomalies with their timestamps (sharp drops and z-score
+     * outliers), over the scored points (DACE "Unsure" points excluded).
+     */
+    getAnomalies(): AnomalyResult {
+        return detectAnomalies(this.scoredData());
     }
 
     /** Points that carry a score (DACE "Unsure" points removed). */

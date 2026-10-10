@@ -9,7 +9,10 @@
  *
  * Model:  public/models/yolov8n-objects.onnx
  *         YOLOv8-nano fine-tuned on COCO classes of interest.
- * Input:  [1, 3, 640, 640]  float32, normalized [0, 1], NCHW
+ * Input:  [1, 3, 640, 640]  float32, normalized [0, 1], NCHW, LETTERBOXED
+ *         (aspect ratio kept, padding value 114/255 as in Ultralytics); boxes
+ *         are mapped back to the source frame. Frames used to be stretched
+ *         to 640x640, which distorts objects in a 4:3 / 16:9 webcam frame.
  * Output: [1, 84, 8400]     float32  (cx cy w h + 80 COCO class scores)
  *
  * New dependency: onnxruntime-web
@@ -42,10 +45,23 @@ const CONFIDENCE_THRESHOLD = 0.25;
 /** IoU threshold for Non-Maximum Suppression. */
 const IOU_THRESHOLD = 0.45;
 
+/** Letterbox padding value (Ultralytics default grey 114). */
+const PAD_VALUE = 114 / 255;
+
 /**
  * COCO 80-class indices (0-indexed) mapped to CognEn object classes.
  * Only these classes are extracted during post-processing.
  * Reference: https://tech.amikelive.com/node-718/
+ *
+ * KNOWN LIMITATION - 'pen', 'notebook' and 'tablet' are ObjectClass values
+ * that this detector can NEVER emit: COCO has no pen/pencil or notebook
+ * class, and a tablet is detected (if at all) as 'cell phone' or 'laptop'.
+ * Consequently, with this stock-COCO model, HandObjectProximityDetector
+ * never returns 'holding_pen', and the rule branches that test 'notebook'
+ * only fire for the 'book' class. Producing them needs a fine-tuned model
+ * (v2.0 open task: fine-tune on an Open Images subset) or the DACE pen-grip
+ * evidence (scoring/dace/hand-object.ts), which infers writing from the hand
+ * pose rather than from a pen box.
  */
 const COCO_CLASS_MAP: Record<number, ObjectClass> = {
   63: 'laptop',
@@ -106,6 +122,93 @@ function nms(detections: RawDetection[]): RawDetection[] {
   }
 
   return keep;
+}
+
+// ==================== LETTERBOX ====================
+
+/** Scale and padding used to fit a srcW x srcH frame into size x size. */
+export type Letterbox = {
+  scale: number;
+  padX: number;
+  padY: number;
+  /** drawn content size inside the square input */
+  drawW: number;
+  drawH: number;
+  srcW: number;
+  srcH: number;
+};
+
+/**
+ * Letterbox geometry: uniform scale = min(size/srcW, size/srcH), content
+ * centred, padding split evenly (integer pixels). Missing or zero source
+ * dimensions fall back to a square size x size source (identity).
+ */
+export function computeLetterbox(srcW: number, srcH: number, size: number = INPUT_SIZE): Letterbox {
+  const w = srcW > 0 ? srcW : size;
+  const h = srcH > 0 ? srcH : size;
+  const scale = Math.min(size / w, size / h);
+  const drawW = Math.round(w * scale);
+  const drawH = Math.round(h * scale);
+  const padX = Math.floor((size - drawW) / 2);
+  const padY = Math.floor((size - drawH) / 2);
+  return { scale, padX, padY, drawW, drawH, srcW: w, srcH: h };
+}
+
+/**
+ * Map a box predicted in letterboxed input pixels (cx, cy, w, h) back to the
+ * source frame, normalised to [0, 1] (centre x/y + width/height).
+ */
+export function unletterboxBox(
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  lb: Letterbox
+): { x: number; y: number; width: number; height: number } {
+  return {
+    x: (cx - lb.padX) / lb.scale / lb.srcW,
+    y: (cy - lb.padY) / lb.scale / lb.srcH,
+    width: w / lb.scale / lb.srcW,
+    height: h / lb.scale / lb.srcH,
+  };
+}
+
+/**
+ * RGBA ImageData of the square input -> CHW float32 tensor in [0, 1]; pixels
+ * outside the drawn content region are set to the padding value, so stale
+ * content from a previous frame never leaks into the padding.
+ */
+export function imageDataToLetterboxTensor(imageData: ImageData, lb: Letterbox): Float32Array {
+  const { data, width, height } = imageData;
+  const numPixels = width * height;
+  const tensor = new Float32Array(3 * numPixels);
+  const x0 = lb.padX;
+  const x1 = lb.padX + lb.drawW;
+  const y0 = lb.padY;
+  const y1 = lb.padY + lb.drawH;
+  for (let y = 0; y < height; y++) {
+    const inY = y >= y0 && y < y1;
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (inY && x >= x0 && x < x1) {
+        tensor[i] = data[i * 4] / 255.0;
+        tensor[numPixels + i] = data[i * 4 + 1] / 255.0;
+        tensor[2 * numPixels + i] = data[i * 4 + 2] / 255.0;
+      } else {
+        tensor[i] = PAD_VALUE;
+        tensor[numPixels + i] = PAD_VALUE;
+        tensor[2 * numPixels + i] = PAD_VALUE;
+      }
+    }
+  }
+  return tensor;
+}
+
+function sourceSize(source: HTMLVideoElement | HTMLCanvasElement): { w: number; h: number } {
+  const v = source as Partial<HTMLVideoElement>;
+  if (typeof v.videoWidth === 'number' && v.videoWidth > 0) return { w: v.videoWidth, h: v.videoHeight ?? 0 };
+  const c = source as Partial<HTMLCanvasElement>;
+  return { w: typeof c.width === 'number' ? c.width : 0, h: typeof c.height === 'number' ? c.height : 0 };
 }
 
 // ==================== OBJECT DETECTOR ====================
@@ -278,10 +381,12 @@ export class ObjectDetector {
       return [];
     }
 
-    // ── Pre-processing ──────────────────────────────────────────
-    this.offscreenCtx.drawImage(source, 0, 0, INPUT_SIZE, INPUT_SIZE);
+    // ── Pre-processing (letterbox: keep aspect ratio, pad with grey) ──
+    const { w: srcW, h: srcH } = sourceSize(source);
+    const lb = computeLetterbox(srcW, srcH);
+    this.offscreenCtx.drawImage(source, lb.padX, lb.padY, lb.drawW, lb.drawH);
     const imageData = this.offscreenCtx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
-    const inputTensor = this.imageDataToTensor(imageData);
+    const inputTensor = imageDataToLetterboxTensor(imageData, lb);
 
     // ── Inference ───────────────────────────────────────────────
     const pkg2 = 'onnxruntime-web';
@@ -299,23 +404,8 @@ export class ObjectDetector {
     const outputDims: number[] = results['output0'].dims;
 
     // ── Post-processing ─────────────────────────────────────────
-    this.lastResults = this.postprocess(outputData, outputDims, opts?.minConf ?? CONFIDENCE_THRESHOLD);
+    this.lastResults = this.postprocess(outputData, outputDims, opts?.minConf ?? CONFIDENCE_THRESHOLD, lb);
     return this.lastResults;
-  }
-
-  /** Convert RGBA ImageData → CHW float32 tensor, values in [0, 1]. */
-  private imageDataToTensor(imageData: ImageData): Float32Array {
-    const { data, width, height } = imageData;
-    const numPixels = width * height;
-    const tensor = new Float32Array(3 * numPixels);
-
-    for (let i = 0; i < numPixels; i++) {
-      tensor[i] = data[i * 4] / 255.0;                    // R channel
-      tensor[numPixels + i] = data[i * 4 + 1] / 255.0;   // G channel
-      tensor[2 * numPixels + i] = data[i * 4 + 2] / 255.0; // B channel
-    }
-
-    return tensor;
   }
 
   /**
@@ -324,11 +414,13 @@ export class ObjectDetector {
    * Output layout: [1, 84, 8400]
    *   - Rows 0–3   : cx, cy, w, h  (pixel coords at INPUT_SIZE scale)
    *   - Rows 4–83  : per-class confidence scores (sigmoid already applied)
+   * Boxes are mapped from letterboxed input pixels back to the source frame.
    */
   private postprocess(
     outputData: Float32Array,
     dims: number[],
-    threshold: number = CONFIDENCE_THRESHOLD
+    threshold: number = CONFIDENCE_THRESHOLD,
+    lb: Letterbox = computeLetterbox(INPUT_SIZE, INPUT_SIZE)
   ): DetectedObject[] {
     const numPreds = dims[2]; // 8400
     const raw: RawDetection[] = [];
@@ -360,12 +452,7 @@ export class ObjectDetector {
     return nms(raw).map((d) => ({
       class: COCO_CLASS_MAP[d.classId],
       confidence: d.score,
-      bbox: {
-        x: d.cx / INPUT_SIZE,
-        y: d.cy / INPUT_SIZE,
-        width: d.w / INPUT_SIZE,
-        height: d.h / INPUT_SIZE,
-      },
+      bbox: unletterboxBox(d.cx, d.cy, d.w, d.h, lb),
     }));
   }
 }

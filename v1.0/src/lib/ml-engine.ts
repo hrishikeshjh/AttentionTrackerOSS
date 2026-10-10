@@ -30,7 +30,7 @@ import {
   OPTIMAL_RANGES,
 } from './scoring/constants';
 import { ExponentialMovingAverage } from './scoring/ema';
-import { ContradictionDetector } from './contradiction-detector';
+import { ContradictionDetector, type ContradictionTaxonomy } from './contradiction-detector';
 import { applyScoreHold } from './scoring/dace/score-hold';
 
 // Feature weights and thresholds now live in ./scoring/constants.ts (the
@@ -239,9 +239,12 @@ function scoreFeature(
       break;
   }
 
-  // Legacy/upgraded paths keep the historical lookup (upgraded table first,
-  // even on the legacy path) so their output stays byte-identical. The DACE
-  // path passes the weight table actually used for scoring.
+  // Without `contributionWeights` the historical lookup is used (upgraded
+  // table first, even on the legacy path), which mis-weights contributions of
+  // features whose legacy and upgraded weights differ (e.g. ear .15 vs .10).
+  // It is kept only for MLEngine's default construction, which the legacy
+  // golden fixture freezes; the app engine (APP_ENGINE_OPTIONS) and the DACE
+  // path pass the weight table actually used for scoring.
   const weight = contributionWeights
     ? contributionWeights[name] ?? 0
     : FEATURE_WEIGHTS_V1_UPGRADED[name] ?? FEATURE_WEIGHTS_LEGACY[name] ?? 0;
@@ -278,13 +281,46 @@ export type DacePredictInput = {
 
 export type PredictOptions = { dace?: DacePredictInput };
 
+/**
+ * Engine construction options. The defaults reproduce the historical
+ * behaviour byte for byte (frozen by src/lib/__tests__/legacy-equivalence.test.ts);
+ * the app uses APP_ENGINE_OPTIONS, which only changes explanatory outputs
+ * (featureContributions / top influencers, CMCV category), never rawScore,
+ * attentionState or confidence.
+ */
+export type MLEngineOptions = {
+  /** CMCV category rules: 'v1' original (default), 'v2' corrected (see contradiction-detector.ts) */
+  cmcvTaxonomy?: ContradictionTaxonomy;
+  /**
+   * 'historical' (default): contribution weight looked up upgraded-first even
+   * on the legacy path. 'used': the weight table that actually scored the
+   * frame (legacy weights on the legacy path).
+   */
+  contributionWeights?: 'historical' | 'used';
+};
+
+/** Options of the engine the web app uses (getMLEngine / resetMLEngine, /replay). */
+export const APP_ENGINE_OPTIONS: Readonly<Required<MLEngineOptions>> = Object.freeze({
+  cmcvTaxonomy: 'v2',
+  contributionWeights: 'used',
+});
+
+/** Score fed to the EMA for an absent (no face) tick: the 'absent' behaviour score. */
+export const ABSENT_SCORE = 0;
+
 // ==================== ML ENGINE ====================
 
 export class MLEngine {
   private scoreEMA = new ExponentialMovingAverage(0.15);
-  private contradictionDetector = new ContradictionDetector();
+  private contradictionDetector: ContradictionDetector;
   private predictionHistory: MLPrediction[] = [];
   private readonly MAX_HISTORY = 100;
+  private readonly contributionWeights: 'historical' | 'used';
+
+  constructor(options: MLEngineOptions = {}) {
+    this.contradictionDetector = new ContradictionDetector(options.cmcvTaxonomy ?? 'v1');
+    this.contributionWeights = options.contributionWeights ?? 'historical';
+  }
 
   /**
    * Predict attention state from extended face metrics.
@@ -355,7 +391,11 @@ export class MLEngine {
       const weight = weights[name] ?? 0;
       if (weight === 0 || value === null) continue;
 
-      const result = scoreFeature(name, value);
+      const result = scoreFeature(
+        name,
+        value,
+        this.contributionWeights === 'used' ? weights : undefined
+      );
       featureScores[name] = result;
 
       weightedSum += result.score * weight * result.quality;
@@ -526,6 +566,29 @@ export class MLEngine {
     return prediction;
   }
 
+  /**
+   * No face for a sustained period (the caller decides; webcam-panel uses
+   * ABSENCE_GRACE_MS). Absence is scored as the 'absent' behaviour
+   * (ABSENT_SCORE = 0, the same value as BEHAVIOR_ATTENTION_SCORES.absent and
+   * v2.0's absent class) through the same EMA, so a long absence lowers the
+   * session average gradually instead of being skipped; the state is 'Idle'.
+   * The CMCV is not updated (there are no modalities to compare). Never
+   * called by the legacy golden fixture, so the frozen path is unchanged.
+   */
+  predictAbsent(): MLPrediction {
+    const smoothed = this.scoreEMA.update(ABSENT_SCORE);
+    const prediction: MLPrediction = {
+      attentionState: 'Idle',
+      confidence: 0.9,
+      rawScore: Math.round(smoothed),
+      featureImportance: {},
+      featureContributions: {},
+    };
+    this.predictionHistory.push(prediction);
+    if (this.predictionHistory.length > this.MAX_HISTORY) this.predictionHistory.shift();
+    return prediction;
+  }
+
   getStats(): {
     avgScore: number;
     avgConfidence: number;
@@ -626,10 +689,10 @@ export function debugPrediction(
 let mlEngineInstance: MLEngine | null = null;
 
 export function getMLEngine(): MLEngine {
-  if (!mlEngineInstance) mlEngineInstance = new MLEngine();
+  if (!mlEngineInstance) mlEngineInstance = new MLEngine(APP_ENGINE_OPTIONS);
   return mlEngineInstance;
 }
 
 export function resetMLEngine(): void {
-  mlEngineInstance = new MLEngine();
+  mlEngineInstance = new MLEngine(APP_ENGINE_OPTIONS);
 }

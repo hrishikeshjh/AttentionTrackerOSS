@@ -2,6 +2,7 @@
  * onnxruntime-web is mocked: tests the temporal-classifier loadModel contract
  * (plan D10 / FR10) and the YOLO detector self-test / checksum / cadence (FR4).
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type RunFn = (feeds: Record<string, { data: Float32Array; dims: number[] }>) => Promise<Record<string, { data: ArrayLike<number>; dims: number[] }>>;
@@ -106,6 +107,36 @@ describe('temporal classifier loadModel contract (D10)', () => {
     expect(feed!.dims).toEqual([1, 15, 13]);
     expect(feed!.data[12]).toBeCloseTo(PROXIMITY_CODES_V1.holding_phone, 6);
     expect(tc.getLastResult()).toMatchObject({ label: 'drowsy', confidence: 0.5 });
+  });
+
+  it('featureDim 15 (v2.0 v3 model): [1,15,15], first 13 channels unchanged, posture padded per encode15_v2.json', async () => {
+    const fx = JSON.parse(
+      readFileSync(new URL('../../../../../shared/fixtures/encode15_v2.json', import.meta.url), 'utf8')
+    ) as { feature_dim: number; v1_load_model_feature_dim_15_padding: number[] };
+    const feeds: Array<{ data: Float32Array; dims: number[] }> = [];
+    ortState.run = async (f) => {
+      feeds.push(f.input);
+      return { logits: { data: [0, 0, 0, 0, 0, 0], dims: [1, 6] } };
+    };
+    const run = async (featureDim?: 13 | 15) => {
+      const tc = new TemporalBehaviorClassifier();
+      expect(await tc.loadModel('/m.onnx', featureDim ? { featureDim } : {})).toBe(true);
+      for (let i = 0; i < 15; i++) tc.update({ metrics: metrics({ ear: 0.2 + i * 0.001 }), detectedObjects: [], handProximity: 'holding_book' });
+      await flush();
+      return feeds[feeds.length - 1];
+    };
+    const f13 = await run();
+    const f15 = await run(15);
+    expect(f13.dims).toEqual([1, 13, 15]);
+    expect(f15.dims).toEqual([1, fx.feature_dim, 15]);
+    expect(Array.from(f15.data.slice(0, 13 * 15))).toEqual(Array.from(f13.data));
+    for (let t = 0; t < 15; t++) {
+      expect(f15.data[13 * 15 + t]).toBe(fx.v1_load_model_feature_dim_15_padding[0]);
+      expect(f15.data[14 * 15 + t]).toBe(fx.v1_load_model_feature_dim_15_padding[1]);
+    }
+    const bad = new TemporalBehaviorClassifier();
+    expect(await bad.loadModel('/m.onnx', { featureDim: 14 as never })).toBe(false);
+    expect(bad.lastError).toMatch(/featureDim/);
   });
 
   it('wrong input/output names: load fails, lastError set, rule layer used', async () => {

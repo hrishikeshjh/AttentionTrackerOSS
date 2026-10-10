@@ -21,6 +21,15 @@
  * options. Any load or inference failure sets lastError, unloads the model
  * and falls back to the rule layer; the rule-based path is unchanged.
  *
+ * Channel count (`featureDim`, default 13): v2.0 FEATURE_VECTOR_VERSION 2
+ * models (v2.0/models/behavior_classifier_v3.onnx) take 15 channels = these
+ * 13 + posture (posture_upright, posture_lean_norm). The browser has no pose,
+ * so with `featureDim: 15` each frame is padded with POSTURE_UNKNOWN (1, 0),
+ * the same values v2.0 encodes for an unknown posture
+ * (shared/fixtures/encode15_v2.json). Sign convention of such models:
+ * pitch_norm and gaze_y are DOWN = NEGATIVE (v2.0/features/feature_vector.py);
+ * DACE mode feeds this (negated DACE values, plan D7), the legacy path does not.
+ *
  * Feature vector per frame (FEATURE_DIM = 13):
  *   [gaze_x, gaze_y, pitch_norm, yaw_norm, ear, perclos,
  *    head_pose_stability, obj_book, obj_phone, obj_laptop,
@@ -33,6 +42,7 @@ import type {
   BehaviorResult,
   HandObjectProximity,
   DetectedObject,
+  StudyContext,
 } from './types';
 import { clamp } from './face-geometry';
 
@@ -76,6 +86,12 @@ export const PROXIMITY_CODES_V1: Readonly<Record<HandObjectProximity, number>> =
   hands_not_visible: 0.0,
 });
 
+/** Posture channels appended for a 15-channel (v2.0 FEATURE_VECTOR_VERSION 2) model: unknown posture. */
+export const POSTURE_UNKNOWN: readonly [number, number] = Object.freeze([1, 0]) as unknown as readonly [number, number];
+
+/** Channel counts loadModel() accepts: 13 (v1 vector, default) or 15 (v1 vector + posture). */
+export type ModelFeatureDim = 13 | 15;
+
 /** v2.0 training proximity codes (v2.0/features/feature_vector.py _PROXIMITY_CODE). */
 export const PROXIMITY_CODES_V2: Readonly<Record<HandObjectProximity, number>> = Object.freeze({
   hands_not_visible: 0.0,
@@ -97,6 +113,8 @@ export type ModelLoadOptions = {
   classes?: readonly BehaviorLabel[];
   /** onnxruntime-web WASM location (default '/onnx/') */
   wasmPaths?: string;
+  /** model input channels: 13 (default) or 15 (v2.0 v3 model; posture padded with POSTURE_UNKNOWN) */
+  featureDim?: ModelFeatureDim;
 };
 
 type ResolvedModelOptions = Required<Omit<ModelLoadOptions, 'classes'>> & { classes: readonly BehaviorLabel[] };
@@ -125,6 +143,40 @@ export function packWindow(buffer: readonly number[][], layout: 'channels_first'
   return flat;
 }
 
+/**
+ * Share of the window that must be explicit no-face frames (updateAbsent())
+ * for the temporal rule layer to return 'absent' (same value as the DACE rule
+ * "absent if no face in >= 80% of W", ARCHITECTURE.md §11.5).
+ */
+export const ABSENT_WINDOW_SHARE = 0.8;
+
+/**
+ * Feature vector pushed for a no-face frame: all zeros, the convention of the
+ * v2.0 dataset loaders (no face -> np.zeros(13)).
+ */
+const ABSENT_FEATURES: readonly number[] = Object.freeze(new Array<number>(FEATURE_DIM).fill(0));
+
+/**
+ * High-level study context derived from the behaviour label and hand state
+ * (fills ExtendedFaceMetrics.studyContext, which nothing used to set).
+ * 'writing' needs a pen in hand while reading-type behaviour is detected.
+ */
+export function deriveStudyContext(
+  label: BehaviorLabel | undefined,
+  handProximity: HandObjectProximity | undefined
+): StudyContext {
+  switch (label) {
+    case 'attentive_reading':
+      return handProximity === 'holding_pen' ? 'writing' : 'reading';
+    case 'using_phone':
+      return 'using_phone';
+    case 'attentive_screen':
+      return 'watching_screen';
+    default:
+      return 'unknown';
+  }
+}
+
 // ==================== FRAME INPUT TYPE ====================
 
 export type TemporalFeatureFrame = {
@@ -140,6 +192,8 @@ export class TemporalBehaviorClassifier {
   private featureBuffer: number[][] = [];
   /** proximity label per buffered frame (re-encoded with the model's code set) */
   private proximityBuffer: HandObjectProximity[] = [];
+  /** true for frames added by updateAbsent() (no face detected) */
+  private absentBuffer: boolean[] = [];
 
   /** Optional ONNX session (loaded via loadModel). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -174,8 +228,12 @@ export class TemporalBehaviorClassifier {
       proximityCodes: options.proximityCodes ?? 'v2',
       classes: options.classes ?? MODEL_CLASSES,
       wasmPaths: options.wasmPaths ?? '/onnx/',
+      featureDim: options.featureDim ?? FEATURE_DIM,
     };
     try {
+      if (opts.featureDim !== 13 && opts.featureDim !== 15) {
+        throw new Error(`unsupported featureDim ${opts.featureDim} (13 or 15)`);
+      }
       const pkg = 'onnxruntime-web';
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ort: any = await import(pkg as string);
@@ -217,10 +275,7 @@ export class TemporalBehaviorClassifier {
    * Call this once per inference frame (every ~200 ms at 5 FPS).
    */
   update(frame: TemporalFeatureFrame): BehaviorResult {
-    this.featureBuffer.push(this.extractFeatures(frame));
-    if (this.featureBuffer.length > WINDOW_SIZE) this.featureBuffer.shift();
-    this.proximityBuffer.push(frame.handProximity);
-    if (this.proximityBuffer.length > WINDOW_SIZE) this.proximityBuffer.shift();
+    this.push(this.extractFeatures(frame), frame.handProximity, false);
 
     if (this.featureBuffer.length < WINDOW_SIZE) {
       // Not enough history yet — single-frame rule-based
@@ -236,6 +291,33 @@ export class TemporalBehaviorClassifier {
     return this.lastResult;
   }
 
+  /**
+   * Add one frame in which NO face was detected (call at the same cadence as
+   * update()). Pushes the all-zero feature vector and marks the frame absent,
+   * so the window can classify sustained absence: the temporal rule layer
+   * returns 'absent' when >= ABSENT_WINDOW_SHARE of the window is absent;
+   * before the window is full a no-face frame is 'absent' directly (as the
+   * single-frame rule does for a tiny face).
+   */
+  updateAbsent(): BehaviorResult {
+    this.push([...ABSENT_FEATURES], 'hands_not_visible', true);
+    if (this.featureBuffer.length < WINDOW_SIZE) {
+      this.lastResult = this.makeResult('absent', 1.0);
+      return this.lastResult;
+    }
+    this.lastResult = this.modelSession ? this.onnxClassify() : this.ruleBasedTemporal();
+    return this.lastResult;
+  }
+
+  private push(features: number[], proximity: HandObjectProximity, absent: boolean): void {
+    this.featureBuffer.push(features);
+    if (this.featureBuffer.length > WINDOW_SIZE) this.featureBuffer.shift();
+    this.proximityBuffer.push(proximity);
+    if (this.proximityBuffer.length > WINDOW_SIZE) this.proximityBuffer.shift();
+    this.absentBuffer.push(absent);
+    if (this.absentBuffer.length > WINDOW_SIZE) this.absentBuffer.shift();
+  }
+
   getLastResult(): BehaviorResult {
     return this.lastResult;
   }
@@ -243,6 +325,7 @@ export class TemporalBehaviorClassifier {
   reset(): void {
     this.featureBuffer = [];
     this.proximityBuffer = [];
+    this.absentBuffer = [];
     this.lastResult = {
       label: 'distracted',
       attentionScore: 50,
@@ -353,6 +436,14 @@ export class TemporalBehaviorClassifier {
    * Provides more stable results than single-frame by smoothing transient noise.
    */
   private ruleBasedTemporal(): BehaviorResult {
+    // Absent: explicit no-face frames (updateAbsent) dominate the window.
+    // Only frames pushed by updateAbsent() count, so windows built purely
+    // from update() calls (the legacy golden fixture) are unaffected.
+    const absentFrames = this.absentBuffer.filter(Boolean).length;
+    if (absentFrames > 0 && absentFrames >= ABSENT_WINDOW_SHARE * this.featureBuffer.length) {
+      return this.makeResult('absent', absentFrames / this.featureBuffer.length);
+    }
+
     // Compute per-feature average across the window
     const avg = new Array<number>(FEATURE_DIM).fill(0);
     for (const vec of this.featureBuffer) {
@@ -423,10 +514,11 @@ export class TemporalBehaviorClassifier {
         const v = [...vec];
         const prox = this.proximityBuffer[t];
         v[FEATURE_DIM - 1] = prox !== undefined ? (codes[prox] ?? 0) : v[FEATURE_DIM - 1];
-        return v;
+        return opts.featureDim === 15 ? [...v, ...POSTURE_UNKNOWN] : v;
       });
       const flat = packWindow(buf, opts.layout);
-      const dims = opts.layout === 'channels_first' ? [1, FEATURE_DIM, WINDOW_SIZE] : [1, WINDOW_SIZE, FEATURE_DIM];
+      const F = opts.featureDim;
+      const dims = opts.layout === 'channels_first' ? [1, F, WINDOW_SIZE] : [1, WINDOW_SIZE, F];
       this.runOnnxAsync(flat, dims, opts).then((result) => {
         if (result) this.lastResult = result;
       });
