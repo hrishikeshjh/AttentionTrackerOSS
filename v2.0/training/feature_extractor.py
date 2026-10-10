@@ -1,6 +1,8 @@
 """
-feature_extractor.py — Convert FaceMetricsResult + context into the 13-dim
-feature vector used by the 1D-CNN. v1.0 temporal-classifier.ts uses the same
+feature_extractor.py — Convert FaceMetricsResult + context into the
+FEATURE_DIM (15, FEATURE_VECTOR_VERSION 2 = 13 v1.0-compatible + posture)
+feature vector used by the v2 1D-CNN. The first 13 entries are the v1 vector;
+v1.0 temporal-classifier.ts uses the same
 layout, but its rule layer uses different proximity codes; only its ONNX
 input path (loadModel, proximityCodes='v2') matches index 12 here
 (see features/feature_vector.py).
@@ -15,7 +17,8 @@ actually used for training) and inference/behavior_classifier.py::_extract
 live train/inference distribution-mismatch bug, now fixed by delegating to
 the canonical encoder.
 
-Feature vector (FEATURE_DIM = 13):
+Feature vector (first 13 of FEATURE_DIM = 15; 13/14 = posture, see
+features/feature_vector.py; pitch_norm / gaze_y: DOWN = NEGATIVE):
     0  gaze_x           [-1, 1]
     1  gaze_y           [-1, 1]
     2  pitch_norm       [-1, 1]   pitch / 90
@@ -40,7 +43,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from features.face_metrics import FaceMetricsResult
-from features.feature_vector import FEATURE_DIM, encode_feature_vector
+from features.feature_vector import FEATURE_DIM, encode_frame_v2
 
 __all__ = ["extract_feature_vector", "build_input_tensor", "FEATURE_DIM"]
 
@@ -49,9 +52,10 @@ def extract_feature_vector(
     metrics: FaceMetricsResult,
     detected_objects: list | None = None,
     hand_proximity: str = "hands_not_visible",
+    posture=None,
 ) -> np.ndarray:
     """
-    Build the canonical 13-dim feature vector from a FaceMetricsResult.
+    Build the canonical v2 (15-dim) feature vector from a FaceMetricsResult.
 
     Args:
         metrics:          FaceMetricsResult from face_metrics.py.
@@ -59,21 +63,10 @@ def extract_feature_vector(
         hand_proximity:   String code for hand-object proximity.
 
     Returns:
-        np.ndarray of shape (13,), dtype float32. gaze/pitch/yaw in [-1,1],
-        remaining continuous features in [0,1] -- see module docstring.
+        np.ndarray of shape (FEATURE_DIM,) = (15,), dtype float32. gaze/pitch/yaw
+        in [-1,1], remaining continuous features in [0,1] -- see module docstring.
     """
-    return encode_feature_vector(
-        gaze_x=metrics.gaze_x,
-        gaze_y=metrics.gaze_y,
-        pitch=metrics.pitch,
-        yaw=metrics.yaw,
-        ear=metrics.ear,
-        perclos=metrics.perclos,
-        stability=metrics.head_pose_stability,
-        fidget=metrics.fidget_score,
-        detected_objects=detected_objects or [],
-        hand_proximity=hand_proximity,
-    )
+    return encode_frame_v2(metrics, detected_objects or [], hand_proximity, posture)
 
 
 def build_input_tensor(

@@ -1,0 +1,184 @@
+{
+  "data_source": "synthetic",
+  "claims_allowed": false,
+  "WARNING": "synthetic-only, circular: hold-out drawn from the training generator with another seed; says nothing about real classroom accuracy",
+  "model": "behavior_classifier_v3.onnx",
+  "input_channels": 15,
+  "seed": 2026,
+  "n_per_class": 1000,
+  "clean": {
+    "n": 6000,
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "per_class": {
+      "attentive_screen": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "attentive_reading": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "using_phone": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "distracted": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "drowsy": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "absent": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        1000,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        1000,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1000,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1000,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        1000,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1000
+      ]
+    ]
+  },
+  "augmented": {
+    "n": 6000,
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "per_class": {
+      "attentive_screen": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "attentive_reading": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "using_phone": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "distracted": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "drowsy": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "absent": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        1000,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        1000,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1000,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1000,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        1000,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1000
+      ]
+    ]
+  },
+  "sign_flip_reading_phone_recall": 0.0
+}

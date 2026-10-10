@@ -1,15 +1,24 @@
 """
 occupancy_metrics.py — Seat occupancy evaluation metrics.
 
-Implements occupancy metrics from ARCHITECTURE.md §7:
-    • Occupancy accuracy           (target ≥ 95%)
-    • Absence detection latency    (target < 30 seconds)
+Implements the occupancy metrics of ARCHITECTURE.md §7:
+    • Occupancy accuracy           (target ≥ 0.95)  per seat × frame
+    • Absence detection latency    (target < 30 s)  per absence EVENT
 
-Usage:
-    from evaluation.occupancy_metrics import OccupancyEvaluator
-    ev = OccupancyEvaluator(seat_ids=["seat_1", ..., "seat_6"], fps=5.0)
-    ev.update(pred_occupied={"seat_1", "seat_3"}, gt_occupied={"seat_1", "seat_2", "seat_3"})
-    report = ev.compute()
+An absence event starts at the frame where a seat goes from occupied to
+empty in the ground truth (an onset must be observed: a seat that is empty
+from the first frame has no onset). Its latency is the time from the onset to
+the first frame, at or after it, in which the prediction also says empty.
+Each event is recorded once. If the seat is re-occupied (GT) or the stream
+ends before the prediction says empty, the event is counted as MISSED and
+contributes no latency.
+
+The previous implementation re-recorded a 0-frame "latency" on every frame
+in which GT and prediction were both empty (it reset its state after each
+recording), so an empty seat flooded the statistic with zeros.
+
+Not evaluable -> None: accuracy without frames, latency without any detected
+event (status explains why).
 """
 
 from __future__ import annotations
@@ -26,115 +35,125 @@ TARGETS = {
 
 class OccupancyEvaluator:
     """
-    Evaluates per-seat occupancy predictions against ground truth.
-
     Args:
-        seat_ids: List of all seat identifiers in the room.
-        fps:      Frame rate (for latency computation).
+        seat_ids: All seat identifiers in the room.
+        fps:      Rate of the evaluated frames (latency frames -> seconds).
     """
 
     def __init__(self, seat_ids: list[str], fps: float = 5.0) -> None:
-        self.seat_ids = seat_ids
+        self.seat_ids = list(seat_ids)
         self.fps      = fps
-        self._n_seats = len(seat_ids)
-
-        self._correct: int = 0
-        self._total:   int = 0
-
-        # Absence latency: track when each seat first became empty in GT
-        # and when the predictor finally called it empty.
-        self._gt_empty_since:   dict[str, int | None] = {s: None for s in seat_ids}
-        self._pred_empty_since: dict[str, int | None] = {s: None for s in seat_ids}
-        self._latencies_frames: list[int] = []
-        self._frame_idx: int = 0
+        self.reset()
 
     # ── accumulation ─────────────────────────────────────────────────────────
 
-    def update(
-        self,
-        pred_occupied: Set[str],
-        gt_occupied:   Set[str],
-    ) -> None:
-        """
-        Record one frame's seat occupancy prediction.
+    def reset(self) -> None:
+        self._correct = 0
+        self._total = 0
+        self._frame_idx = 0
+        self._latencies_frames: list[int] = []
+        self._n_events = 0
+        self._n_missed = 0
+        self._prev_gt: dict[str, bool | None] = {s: None for s in self.seat_ids}
+        self._open_event: dict[str, int | None] = {s: None for s in self.seat_ids}
 
-        Args:
-            pred_occupied: Set of seat IDs predicted as occupied.
-            gt_occupied:   Set of seat IDs that are actually occupied.
-        """
+    def start_sequence(self) -> None:
+        """New clip: close open events as missed, forget the previous GT state."""
+        for s in self.seat_ids:
+            if self._open_event[s] is not None:
+                self._n_missed += 1
+            self._open_event[s] = None
+            self._prev_gt[s] = None
+
+    def update(self, pred_occupied: Set[str], gt_occupied: Set[str]) -> None:
+        """Record one frame's predicted / ground-truth occupied seat sets."""
         fi = self._frame_idx
         self._frame_idx += 1
 
         for seat in self.seat_ids:
             pred_occ = seat in pred_occupied
             gt_occ   = seat in gt_occupied
-
             self._total   += 1
             self._correct += int(pred_occ == gt_occ)
 
-            # Absence latency tracking
-            if not gt_occ and self._gt_empty_since[seat] is None:
-                self._gt_empty_since[seat] = fi   # seat just became empty in GT
-
-            if not pred_occ and self._pred_empty_since[seat] is None:
-                self._pred_empty_since[seat] = fi
-
-            # Once predictor detects empty AND GT is empty, record latency
-            if (self._gt_empty_since[seat] is not None
-                    and self._pred_empty_since[seat] is not None):
-                latency = self._pred_empty_since[seat] - self._gt_empty_since[seat]
-                if latency >= 0:
-                    self._latencies_frames.append(latency)
-                # Reset to avoid double-counting
-                self._gt_empty_since[seat]   = None
-                self._pred_empty_since[seat] = None
-
-            # Reset when seat becomes occupied again
+            prev = self._prev_gt[seat]
             if gt_occ:
-                self._gt_empty_since[seat]   = None
-                self._pred_empty_since[seat] = None
+                if self._open_event[seat] is not None:      # re-occupied before detection
+                    self._n_missed += 1
+                    self._open_event[seat] = None
+            elif prev is True:                               # occupied -> empty: onset
+                self._open_event[seat] = fi
+                self._n_events += 1
 
-    def reset(self) -> None:
-        self._correct = self._total = self._frame_idx = 0
-        self._latencies_frames.clear()
-        for s in self.seat_ids:
-            self._gt_empty_since[s] = self._pred_empty_since[s] = None
+            onset = self._open_event[seat]
+            if onset is not None and not pred_occ:
+                self._latencies_frames.append(fi - onset)
+                self._open_event[seat] = None
+            self._prev_gt[seat] = gt_occ
 
     # ── computation ──────────────────────────────────────────────────────────
 
     def compute(self) -> dict:
-        accuracy = self._correct / max(self._total, 1)
-
+        open_events = sum(1 for s in self.seat_ids if self._open_event[s] is not None)
+        missed = self._n_missed + open_events
         latencies_s = [lat / self.fps for lat in self._latencies_frames]
-        mean_latency = float(np.mean(latencies_s)) if latencies_s else 0.0
-        p95_latency  = float(np.percentile(latencies_s, 95)) if latencies_s else 0.0
 
-        result = {
-            "occupancy_accuracy":      round(accuracy,     4),
-            "mean_absence_latency_s":  round(mean_latency, 2),
-            "p95_absence_latency_s":   round(p95_latency,  2),
+        accuracy = self._correct / self._total if self._total else None
+        mean_latency = float(np.mean(latencies_s)) if latencies_s else None
+        p95_latency  = float(np.percentile(latencies_s, 95)) if latencies_s else None
+
+        if not latencies_s:
+            lat_status = ("insufficient_data: no occupied->empty transition in the ground truth"
+                          if self._n_events == 0 else
+                          "no absence event was detected by the prediction (all missed)")
+        else:
+            lat_status = "ok"
+
+        result: dict[str, object] = {
+            "occupancy_accuracy":      round(accuracy, 4) if accuracy is not None else None,
+            "mean_absence_latency_s":  round(mean_latency, 2) if mean_latency is not None else None,
+            "p95_absence_latency_s":   round(p95_latency, 2) if p95_latency is not None else None,
+            "absence_latency_status":  lat_status,
             "n_seat_frames":           self._total,
+            "n_absence_events":        self._n_events,
             "n_latency_events":        len(latencies_s),
+            "n_missed_events":         missed,
         }
+        lat_ok: bool | None
+        if p95_latency is not None and missed == 0:
+            lat_ok = p95_latency <= TARGETS["absence_detection_latency_s"]
+        elif missed > 0 and self._n_events > 0:
+            lat_ok = False          # an undetected absence fails the latency target
+        else:
+            lat_ok = None
         result["targets_met"] = {
-            "occupancy_accuracy":          accuracy     >= TARGETS["occupancy_accuracy"],
-            "absence_detection_latency_s": p95_latency  <= TARGETS["absence_detection_latency_s"],
+            "occupancy_accuracy": None if accuracy is None else accuracy >= TARGETS["occupancy_accuracy"],
+            "absence_detection_latency_s": lat_ok,
         }
         return result
 
     def print_report(self) -> None:
-        m = self.compute()
+        self.print_metrics(self.compute())
+
+    @staticmethod
+    def print_metrics(m: dict) -> None:
+        """Print a compute() result."""
+        def _f(v, fmt):
+            return format(v, fmt) if v is not None else "n/a"
+
         print("\n" + "=" * 50)
         print("  CognEn Seat Occupancy Metrics")
         print("=" * 50)
-        print(f"  Occupancy accuracy   : {m['occupancy_accuracy']:.4f}"
+        print(f"  Occupancy accuracy   : {_f(m['occupancy_accuracy'], '.4f')}"
               f"  (target ≥ {TARGETS['occupancy_accuracy']})")
-        print(f"  Mean absence latency : {m['mean_absence_latency_s']:.1f} s")
-        print(f"  P95  absence latency : {m['p95_absence_latency_s']:.1f} s"
-              f"  (target < {TARGETS['absence_detection_latency_s']} s)")
+        print(f"  Mean absence latency : {_f(m['mean_absence_latency_s'], '.1f')} s")
+        print(f"  P95  absence latency : {_f(m['p95_absence_latency_s'], '.1f')} s"
+              f"  (target < {TARGETS['absence_detection_latency_s']} s)  [{m['absence_latency_status']}]")
+        print(f"  Absence events       : {m['n_absence_events']} "
+              f"(detected {m['n_latency_events']}, missed {m['n_missed_events']})")
         print(f"  Seat×frame samples   : {m['n_seat_frames']}")
         print()
         print("  Targets met:")
         for k, v in m["targets_met"].items():
-            print(f"    {'✓' if v else '✗'} {k}")
+            print(f"    {'✓' if v is True else ('✗' if v is False else '–  (not evaluable)')} {k}")
         print("=" * 50 + "\n")

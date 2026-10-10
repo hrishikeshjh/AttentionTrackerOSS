@@ -61,13 +61,13 @@ def test_no_group_leaks_across_split():
     assert len(train_groups) > 0
 
 
-def test_degenerate_single_group_falls_back_gracefully():
-    """A single-group input can't be group-split -- must not crash."""
+def test_single_group_cannot_be_split_without_leakage():
+    """A single group cannot be split without putting it on both sides; this
+    used to fall back to a random per-window split (silent leakage)."""
     rng = np.random.default_rng(0)
     X = rng.random((50, 15, 13)).astype(np.float32)
     y = rng.integers(0, 6, size=50)
     groups = np.array(["only_group"] * 50, dtype=object)
 
-    X_tr, y_tr, X_val, y_val = _train_val_split(X, y, groups, val_ratio=0.2, seed=1)
-    assert len(X_tr) + len(X_val) == 50
-    assert len(X_val) > 0
+    with pytest.raises(ValueError, match="single group"):
+        _train_val_split(X, y, groups, val_ratio=0.2, seed=1)

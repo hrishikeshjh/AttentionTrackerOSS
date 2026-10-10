@@ -1,3 +1,5 @@
+> **RETRACTED (archived 2026-10-10).** Not a valid measurement -- see `README.md` in this folder. Fabricated / circular evaluation; do not quote any number below.
+
 # CognEn v2.0 — Experiment 2 Report
 
 > **CAUTION (added after the fact): circular evaluation.** The 1.000 scores below come from a model trained and tested on the same hand-written synthetic generator (different seeds), so they say nothing about real-world accuracy. The report predates the pipeline corrections (v2.0/README.md §23); the committed `eval_20260309_*.json` files are pre-fix outputs. The server loads `behavior_classifier.onnx` (Experiment 1), not `behavior_classifier_v2.onnx`. All figures are targets-in-waiting until measured on dataset D1 / real footage. DACE is v1.0-only and does not apply here.

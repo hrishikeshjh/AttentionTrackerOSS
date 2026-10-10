@@ -9,15 +9,17 @@ Run from the repo root or the v2.0/ directory:
 Requirements: ultralytics  (pip install ultralytics)
 """
 
+import contextlib
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 MODELS_DIR = Path(__file__).parent
 
 
-def _find_cached(model_name: str) -> Optional[Path]:
+def _find_cached(model_name: str, extra_dir: Optional[Path] = None) -> Optional[Path]:
     """
     Search every location where ultralytics might have cached the weights.
     The download destination has changed across ultralytics versions:
@@ -27,6 +29,7 @@ def _find_cached(model_name: str) -> Optional[Path]:
       some   → ~/.ultralytics/assets/
     """
     candidates = [
+        *([extra_dir / model_name] if extra_dir is not None else []),  # our temp download dir
         Path(model_name),                                           # cwd
         Path.home() / ".config" / "Ultralytics" / model_name,     # 8.1+ macOS/Linux
         Path.home() / "AppData" / "Roaming" / "Ultralytics" / model_name,  # Windows
@@ -47,15 +50,18 @@ def download(model_name: str, dest_name: str) -> None:
     print(f"[download_models] Downloading {model_name} → {dest_name} ...")
     try:
         from ultralytics import YOLO  # type: ignore
-        YOLO(model_name)   # triggers download into ultralytics cache
 
-        src = _find_cached(model_name)
-        if src is None:
-            print(f"  WARNING: could not locate downloaded weights for {model_name}")
-            print(f"  Search paths checked — copy {model_name} to {dest} manually.")
-            return
-
-        shutil.copy(src, dest)
+        # Download inside a throw-away working directory: ultralytics drops
+        # the weights into the CWD, which used to leave stray copies
+        # (v2.0/yolov8s.pt, v2.0/yolov8m-pose.pt) next to the code.
+        with tempfile.TemporaryDirectory(prefix="cognen_yolo_") as tmp, contextlib.chdir(tmp):
+            YOLO(model_name)   # triggers the download
+            src = _find_cached(model_name, Path(tmp))
+            if src is None:
+                print(f"  WARNING: could not locate downloaded weights for {model_name}")
+                print(f"  Search paths checked — copy {model_name} to {dest} manually.")
+                return
+            shutil.copy(src, dest)
         print(f"  Saved to {dest}")
     except ImportError:
         print("ERROR: ultralytics not installed. Run: pip install ultralytics")

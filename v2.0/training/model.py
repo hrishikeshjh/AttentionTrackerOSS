@@ -2,8 +2,12 @@
 model.py — 1D-CNN temporal behavior classifier.
 
 Architecture (ARCHITECTURE.md §4 — Temporal Classifier):
-    Input  : (batch, FEATURE_DIM, WINDOW_SIZE)   i.e. (B, 13, 15)
-    Conv1D : 13→32, kernel 3, pad 1  + BN + ReLU
+    Input  : (batch, FEATURE_DIM, WINDOW_SIZE)   i.e. (B, 15, 15)
+             FEATURE_DIM = 15 = features/feature_vector.py FEATURE_VECTOR_VERSION 2
+             (13 v1.0-compatible channels + posture_upright + posture_lean_norm).
+             Older 13-channel checkpoints still load (load() reads the
+             channel count from the checkpoint).
+    Conv1D : F→32, kernel 3, pad 1  + BN + ReLU
     Conv1D : 32→64, kernel 3, pad 1  + BN + ReLU + Dropout(0.2)
     Conv1D : 64→64, kernel 3, pad 1  + BN + ReLU
     GAP    : AdaptiveAvgPool1d(1)    → (B, 64)
@@ -14,7 +18,7 @@ Why 1D-CNN over GRU/LSTM:
   - Captures local temporal patterns via receptive field
   - Faster training and inference than recurrent models
   - 3 conv layers cover a receptive field of 7 frames = 1.4 seconds
-  - ~50k parameters — fits in 200KB ONNX model
+  - ~20.7k parameters at 15 input channels (20,550 at 13) — ~90 KB ONNX
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ class BehaviorClassifierCNN(nn.Module):
     """
     Lightweight 1D-CNN for 15-frame behavioral window classification.
 
-    Input tensor shape: (batch, FEATURE_DIM, WINDOW_SIZE) = (B, 13, 15)
+    Input tensor shape: (batch, feature_dim, WINDOW_SIZE) = (B, 15, 15) by default
     """
 
     def __init__(
@@ -100,9 +104,14 @@ class BehaviorClassifierCNN(nn.Module):
     @classmethod
     def load(cls, ckpt_path: str, device: str = "cpu") -> "BehaviorClassifierCNN":
         """Load a saved checkpoint."""
-        ckpt  = torch.load(ckpt_path, map_location=device)
+        # weights_only=True: never unpickle arbitrary objects from a checkpoint
+        # file (code execution); our checkpoints hold only tensors + plain
+        # Python values (training/train_classifier.py), which this allows.
+        ckpt  = torch.load(ckpt_path, map_location=device, weights_only=True)
         state = ckpt.get("model_state_dict", ckpt)
-        model = cls()
+        # Channel count from the weights, so 13-channel (pre-v3) checkpoints load.
+        feature_dim = int(state["conv_layers.0.weight"].shape[1])
+        model = cls(feature_dim=feature_dim)
         model.load_state_dict(state)
         model.eval()
         return model

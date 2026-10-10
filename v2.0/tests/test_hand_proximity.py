@@ -111,9 +111,12 @@ def test_never_produces_holding_pen_and_labels_are_known_codes():
         _encode_hand_proximity(lbl)  # known to the CMCV encoder
 
 
-def test_parse_source_defaults_to_off():
-    assert parse_hand_proximity_source(None) == "off"
-    assert parse_hand_proximity_source("") == "off"
+def test_parse_source_defaults_to_pose():
+    """Default is now the pose-wrist method (the context gate needs a measured
+    proximity); "off" is an explicit opt-out; unknown values fall back to pose."""
+    assert parse_hand_proximity_source(None) == "pose"
+    assert parse_hand_proximity_source("") == "pose"
     assert parse_hand_proximity_source(" POSE ") == "pose"
     assert parse_hand_proximity_source("off") == "off"
-    assert parse_hand_proximity_source("hands") == "off"
+    assert parse_hand_proximity_source("hands") == "hands"
+    assert parse_hand_proximity_source("bogus") == "pose"

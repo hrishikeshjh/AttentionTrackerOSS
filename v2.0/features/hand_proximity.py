@@ -25,10 +25,12 @@ box width (x) and height (y) before comparing with `max_dist` (default
 0.20, server/config.py HAND_PROXIMITY_NORM, the v1.0 threshold).
 
 This is NOT DACE's hand-object relation (holding = IoU >= 0.1 between a
-hand-landmark box and the object box, ARCHITECTURE.md §11.5); a wrist point
-is a much weaker cue. The threshold is unvalidated on CCTV footage, so the
-feature is OFF by default (COGNEN_HAND_PROXIMITY=off) and the server's
-default output is unchanged.
+hand-landmark box and the object box, ARCHITECTURE.md §11.5); that one is
+features/hand_object.py (COGNEN_HAND_PROXIMITY=hands, MediaPipe
+HandLandmarker, falling back to this module). A wrist point is a weaker cue
+and the threshold is unvalidated on CCTV footage, but it is ON by default
+(COGNEN_HAND_PROXIMITY=pose) because with "off" the context gate could never
+fire; "off" remains an explicit opt-out.
 """
 
 from __future__ import annotations
@@ -53,15 +55,17 @@ _PRIORITY: tuple[tuple[str, str], ...] = (
     ("notebook", "holding_book"),
 )
 
-HAND_PROXIMITY_SOURCES = ("off", "pose")
+HAND_PROXIMITY_SOURCES = ("off", "pose", "hands")
+DEFAULT_HAND_PROXIMITY_SOURCE = "pose"
 
 
-def parse_hand_proximity_source(value: str | None) -> str:
-    """Validate COGNEN_HAND_PROXIMITY. Unknown values fall back to "off"."""
-    v = (value or "off").strip().lower()
+def parse_hand_proximity_source(value: str | None = None) -> str:
+    """Validate COGNEN_HAND_PROXIMITY. Unset/empty or unknown -> "pose" (default)."""
+    v = (value or DEFAULT_HAND_PROXIMITY_SOURCE).strip().lower()
     if v not in HAND_PROXIMITY_SOURCES:
-        logger.warning("COGNEN_HAND_PROXIMITY=%r is not one of %s; using 'off'", value, HAND_PROXIMITY_SOURCES)
-        return "off"
+        logger.warning("COGNEN_HAND_PROXIMITY=%r is not one of %s; using %r",
+                       value, HAND_PROXIMITY_SOURCES, DEFAULT_HAND_PROXIMITY_SOURCE)
+        return DEFAULT_HAND_PROXIMITY_SOURCE
     return v
 
 

@@ -13,10 +13,13 @@ checks that:
      goes below -15, so behavior_classifier's `pitch < -15` reading/phone
      branches are unreachable by looking down.
 
-(2) documents the defect; it is deliberately not fixed in v2.0 (DACE is
-v1.0-only, ARCHITECTURE.md §11.13). If v2.0 adopts a corrected pitch, this
-test must be updated together with the rule thresholds and the synthetic
-training data (pitch_mu) that assume down = negative.
+(2) documents the defect of the LEGACY formula, which v2.0 now uses only as
+the labelled "legacy68" fallback when no transformation matrix exists.
+Server inference measures pitch with the DACE port
+(features/dace_measurement.py: matrix pitch, +down, relative to a per-track
+reference, negated once into the down = negative feature convention), so the
+rules / synthetic data that assume down = negative are now reachable
+(tests/test_dace_measurement.py, tests/test_context_gate.py).
 
 Run: pytest v2.0/tests/test_pitch_characterisation.py
 """

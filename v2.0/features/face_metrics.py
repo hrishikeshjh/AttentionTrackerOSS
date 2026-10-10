@@ -3,8 +3,27 @@ FaceMetrics — v1.0 face geometry logic ported to Python.
 (ARCHITECTURE.md §3 Feature Extraction + §3 Summary: "Port to Python")
 
 Computes EAR, MAR, head pose, gaze, blink rate, PERCLOS, and fatigue
-from 68-point face-api.js-compatible landmarks extracted via a cropped
-face region passed through dlib or MediaPipe FaceMesh.
+from 68-point ibug/face-api.js-compatible landmarks. On the server they come
+from MediaPipe FaceLandmarker via perception/face_landmarks.py::_MP_TO_68.
+
+Head pose and gaze on the server no longer come from this module's 68-point
+formulas: inference/room_analyzer.py uses features/dace_measurement.py
+(MediaPipe transformation matrix -> pitch in degrees relative to a per-track
+screen-facing reference; blendshape gaze with iris cross-check; gaze-corrected
+eye openness / PERCLOS). ``calculate_head_pose`` and ``calculate_gaze`` below
+are the LEGACY formulas, kept for (a) the labelled fallback when no matrix /
+blendshapes exist and (b) landmark-only dataset loaders.
+
+FaceMetricsResult sign convention (feature / rule layer, see
+features/feature_vector.py): ``pitch`` is RELATIVE pitch in degrees with
+head DOWN = NEGATIVE, ``gaze_y`` is vertical gaze with eyes DOWN = NEGATIVE.
+
+Index use (ibug 68-point layout; "LEFT_EYE" here is image-left = the
+subject's right eye, a naming quirk shared with v1.0 constants.ts):
+  EAR   36-41 / 42-47, pairs (37,41) (38,40) vertical, (36,39) horizontal
+  MAR   48/54 outer-lip corners, 51 upper-lip top centre, 57 lower-lip bottom
+  pose  30 nose tip, 36 / 45 outer eye corners
+  gaze  eye corners 36/39 and 42/45, lids 37,38,40,41 / 43,44,46,47
 """
 
 from __future__ import annotations
@@ -36,10 +55,25 @@ class FaceMetricsResult:
     fidget_score: float     # 0–100
     head_pose_stability: float  # 0–100
     face_distance: float | None
+    # v2.0 RoomAnalyzer: fraction of the frame covered by the PERSON box
+    # (a presence/size proxy; the per-face area is not used because CCTV
+    # faces are routinely < 0.5% of the frame, the v1.0 "absent" threshold).
     face_area: float | None
     mouth_openness: float | None
     ear_variance: float
     pose_variance: float
+    # True/False when the face landmarker ran on this person and did / did
+    # not find a face; None when unknown (landmarker unavailable, or a caller
+    # that predates this field). Only False counts as "no face" for the
+    # behavior classifier's "absent" rule.
+    face_detected: bool | None = None
+    # DACE measurement provenance / extras (features/dace_measurement.py).
+    # ``ear`` above is the gaze-corrected openness feature (residual x 0.3)
+    # when the openness model ran; ``ear_raw`` is the uncorrected EAR.
+    ear_raw: float | None = None
+    looking_down: bool | None = None       # D_t (relative pitch >= 15 deg down or valid eye-down gaze)
+    pitch_source: str | None = None        # "matrix" | "legacy68" | None
+    gaze_source: str | None = None         # "blendshape" | "legacy68" | None
 
 
 # ── Constants (mirrored from v1.0 face-geometry.ts) ──────────────────────────
@@ -90,8 +124,25 @@ HEAD_POSE_YAW_GAIN = 50
 HEAD_POSE_PITCH_GAIN = 33.3  # 50 / 1.5 -- see v1.0/src/lib/scoring/pose/head-pose.ts
 
 
+# Legacy pitch of a level head under this formula (test_pitch_characterisation.py
+# / docs/proposals/evidence/legacy_pitch_constants.json). Used ONLY to centre the
+# legacy value for landmark-only callers that have no per-track reference.
+LEGACY_PITCH_NEUTRAL = 12.6
+
+
+def legacy_pitch_to_feature(pitch_legacy: float | None, reference: float = LEGACY_PITCH_NEUTRAL) -> float | None:
+    """LEGACY fallback: map the 68-point pitch (rises when the head goes down)
+    to the feature convention (relative, down = negative). Still not degrees
+    and still saturates ~3 units from neutral, so it cannot reach -15."""
+    return None if pitch_legacy is None else -(pitch_legacy - reference)
+
+
 def calculate_head_pose(lm: list[Point2D]) -> tuple[float | None, float | None, float | None]:
-    """Returns (yaw, pitch, roll) in approximate degrees.
+    """LEGACY. Returns (yaw, pitch, roll) in approximate degrees.
+
+    Server inference uses features/dace_measurement.py (transformation-matrix
+    pitch, +down, relative to a per-track reference) and calls this only as
+    the labelled "legacy68" fallback when no matrix is available.
 
     Same formula and gains as v1.0/src/lib/scoring/pose/head-pose.ts (the
     v1.0 legacy path, SCORING_CORE_VERSION 1.1.0 in
@@ -103,7 +154,7 @@ def calculate_head_pose(lm: list[Point2D]) -> tuple[float | None, float | None, 
     against the constants and results the v1.0 TypeScript test emits
     (docs/proposals/evidence/legacy_pitch_constants.json).
 
-    KNOWN DEFECT (documented, deliberately not changed here): the output is
+    KNOWN DEFECT (why it is now only a fallback): the output is
     not degrees and has no neutral offset. A level head gives pitch ~ +12.6,
     and tilting the head DOWN makes pitch RISE and saturate (~ +16 at
     30-45 deg down), so every `pitch < -15` consumer
@@ -112,9 +163,8 @@ def calculate_head_pose(lm: list[Point2D]) -> tuple[float | None, float | None, 
     nearly flat beyond ~15 deg down). v1.0 fixes it only inside DACE
     (ARCHITECTURE.md §11: MediaPipe transformation-matrix pitch, +down,
     relative to a 5 s reference; legacy fields receive the negated value).
-    DACE declares v2.0 out of scope, so v2.0 keeps this formula until a
-    v2.0 measurement change (e.g. matrix- or solvePnP-based pitch) is
-    planned and validated on its own.
+    v2.0 now does the same in features/dace_measurement.py; this formula is
+    unchanged so the characterisation test keeps pinning the legacy defect.
     """
     nose, l_eye, r_eye = lm[30], lm[36], lm[45]
     eye_mid = Point2D((l_eye.x + r_eye.x) / 2, (l_eye.y + r_eye.y) / 2)
@@ -131,7 +181,12 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 
 
 def calculate_gaze(lm: list[Point2D]) -> tuple[float | None, float | None]:
-    """Returns (gaze_x, gaze_y) in [-1, 1].
+    """LEGACY. Returns (gaze_x, gaze_y) in [-1, 1] (gaze_y: down = negative).
+
+    Server inference uses blendshape gaze with an iris cross-check
+    (features/dace_measurement.py::estimate_gaze); this eyelid-centroid
+    formula is only the labelled "legacy68" fallback when the landmarker
+    returned no blendshapes, and the landmark-only dataset loaders' source.
 
     Canonical formula -- matches v1.0/src/lib/scoring/pose/gaze.ts. Note
     this was previously NOT PORTED to v2.0 at all: room_analyzer.py

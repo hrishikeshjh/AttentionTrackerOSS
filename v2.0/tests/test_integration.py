@@ -255,6 +255,7 @@ class TestONNXSmoke:
             input_names=["input"], output_names=["logits"],
             dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
             opset_version=17,
+            dynamo=False,   # single-file TorchScript export (see training/export_onnx.py)
         )
         assert onnx_out.exists()
 

@@ -13,16 +13,12 @@ from dataclasses import dataclass
 import numpy as np
 from ultralytics import YOLO
 
+from perception.study_objects import COCO_ID_TO_STUDY
 from server.config import OBJECT_CONF_THRESHOLD, OBJECT_DETECTOR_MODEL, require_model_file
 
-# COCO class IDs relevant to study context (0-indexed)
-STUDY_CLASSES = {
-    63: "laptop",
-    64: "mouse",
-    66: "keyboard",
-    67: "phone",
-    73: "book",
-}
+# COCO class IDs relevant to study context (0-indexed). Single source:
+# perception/study_objects.py (also used by the Open Images fine-tuning loader).
+STUDY_CLASSES = COCO_ID_TO_STUDY
 
 
 @dataclass
