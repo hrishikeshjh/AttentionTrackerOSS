@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import type { SessionSummary, UnsureReason } from '@/lib/types';
 import { UNSURE_REASON_TEXT } from '@/lib/scoring/dace/abstain';
+import { THRESHOLDS } from '@/lib/scoring/constants';
 import { Activity, Gauge, HelpCircle, Hourglass, MousePointerClick } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -19,7 +20,11 @@ export default function SummaryCards({ summary, currentScore, currentHeld = fals
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1])[0]?.[0];
   const scoreColor =
-    currentScore >= 75 ? 'text-accent' : currentScore >= 50 ? 'text-yellow-400' : 'text-red-500';
+    currentScore >= THRESHOLDS.ATTENTIVE_MIN
+      ? 'text-accent'
+      : currentScore >= THRESHOLDS.DISTRACTED_MIN
+        ? 'text-yellow-400'
+        : 'text-red-500';
 
   return (
     <div className={cn('grid gap-4 md:grid-cols-2', showUnsure ? 'lg:grid-cols-5' : 'lg:grid-cols-4')}>

@@ -8,8 +8,25 @@
 
 ---
 
+## What changed in this release
+
+Before, then after. Everything below is **unit-tested and CI-verified only**: nothing has been run in a browser, on a camera, in Chrome as an extension, on real classroom/CCTV footage or on a GPU, and every accuracy, latency and FDR-DA figure remains a **target**. The v3 model's 1.000 scores are synthetic and circular.
+
+- **Dependencies.** v1.0 `npm audit`: 107 advisories (6 critical) → **0** (Next 15.5, genkit 1.42, firebase 11.10, Tailwind 4 migration, OpenTelemetry 2.x with a postinstall patch, a local `extract-zip` stub, overrides). v2.0 pins: unresolvable (`ResolutionImpossible`, vulnerable torch/Pillow/onnx/starlette) → a resolvable numpy 2.x stack (torch 2.13, numpy 2.4, boxmot 16, ultralytics 8.4, onnxruntime 1.24, ...), Python 3.10-3.12 only.
+- **CI.** A workflow whose `changes`, `secret-scan`, `v1-audit` and `v2-audit` jobs failed → 12 jobs, all green on a manual `dev` run: pinned-by-SHA Node 24 actions on `ubuntu-24.04`, least-privilege permissions, timeouts, push/PR on `main` and `dev`, `workflow_dispatch` runs everything, **blocking** audits (`npm audit --audit-level=low`, resolving `pip-audit`), generated-fixture drift guards, gitleaks allowlists, Dependabot.
+- **v1.0 web app.** Legacy loop on `requestAnimationFrame` → fixed 200 ms ticks; legacy weights unreachable → reachable when the object model is missing; absence silently skipped → `Idle` after a 3 s grace, lowering the average; CMCV `prop_without_engagement`/`coherent` quirks fixed behind a `v2` taxonomy; frames stretched to 640×640 → letterboxed; unauthenticated report server action → Firebase ID token verified server-side, rate-limited, zod-validated; dead flow and missing `.env.example` fixed.
+- **v1.0 extension.** A divergent copy (EMA 0.35, no context scoring, page-`localStorage` channel, `<all_urls>` resources) → rewritten to web parity (IIFE `ml-core.js`, thresholds 70/40, `setTimeout` loop, HMAC-signed `postMessage` → `bridge.js` → `chrome.runtime`, `storage.session`, alarms/notifications, restricted `web_accessible_resources`, self-view heuristic) with an extension-equivalence Vitest.
+- **v2.0 API.** Open endpoints → `X-API-Key` auth with secure defaults, SSRF policy for stream URLs, rate limits, WebSocket hardening, redacted logs.
+- **v2.0 measurement and gate.** Pitch rose when looking down and `_MP_TO_68` was wrong → DACE measurement ported (matrix pitch against a per-track reference, blendshape gaze, one down = negative convention) and the landmark map rebuilt; Context-Gate never fired → on by default (`COGNEN_HAND_PROXIMITY=pose`); ByteTrack stub always used → real boxmot 16 ByteTrack; 13-dim vector → 15-dim with posture; served model `v2` → `v3` (synthetic-only); CMCV wired to the behaviour label.
+- **Training and evaluation.** Leaky splits, vacuous temporal consistency, per-frame "IDF1", clipped MOTA, CNN-only latency and fabricated reports → group-disjoint splits, 5 Hz `TrackSequenceEncoder`, real IDF1/MOTA, deployed-classifier evaluation, per-stage latency benchmark, `data_source`/`claims_allowed` on every report; the old reports are retracted and archived in `v2.0/evaluation/reports/archive/`.
+- **Tests.** v1.0 Vitest 257 → **326** (33 files); v2.0 light tier 86 → **268 pass / 43 skip**, heavy tier **338 pass**.
+- **Still not done.** Any real-data training/evaluation, YOLO fine-tune, dual-timescale window, real CCTV evaluation, browser/extension/camera runs, GPU runs, Firestore session storage (nothing is written to it), auto-purge/retention.
+
+---
+
 ## Table of Contents
 
+- [What changed in this release](#what-changed-in-this-release)
 - [Hardware Requirements](#hardware-requirements)
 - [Novel Algorithmic Contributions](#novel-algorithmic-contributions)
 1. [System Comparison](#1-system-comparison)
@@ -43,7 +60,7 @@ Runs entirely client-side (webcam capture, face-api.js, ONNX Runtime Web, MediaP
 | **CPU** | Dual-core, 2015+ (any modern laptop/desktop CPU) | Quad-core+, 2019+ |
 | **GPU** | None required — WASM fallback for ONNX Runtime Web | Any GPU with WebGPU support (Chrome 113+) — object detection drops from ~50-80ms/frame (WASM) to ~15ms/frame (WebGPU) |
 | **RAM** | 4 GB system RAM (browser tab uses ~150-250 MB: face-api.js models ~50 MB, ONNX runtime + YOLOv8-nano weights, MediaPipe Hands Lite) | 8 GB system RAM |
-| **Webcam** | Any UVC-compliant webcam, 640×480 @ 5 FPS minimum | 720p+ for better landmark accuracy in low light |
+| **Webcam** | Any UVC-compliant webcam, 640×480 (analysed on 200 ms ticks) | 720p+ for better landmark accuracy in low light |
 | **Browser** | Chrome/Edge 90+ (WASM support) | Chrome/Edge 113+ (WebGPU support), for the extension specifically: Manifest V3 support (Chrome 88+) |
 | **Network** | Broadband for initial model download (~10-15 MB: face-api.js weights + ONNX models via CDN/jsdelivr) — fully offline after first load except Genkit AI report generation, which needs connectivity to Google's Gemini API | Same |
 | **Dev/build host (Next.js server, not the ML inference)** | 1 vCPU, 512 MB RAM (e.g. Firebase App Hosting's default `maxInstances: 1` tier) — this only serves pages and proxies Genkit calls, it does not run any ML inference | 2 vCPU, 1 GB RAM for concurrent multi-user report generation |
@@ -102,12 +119,12 @@ While this system utilizes existing state-of-the-art perception models (e.g., YO
 > **Honesty banner for this section.** All items below are implemented in code and unit-tested; **none has been measured on real data**. Every "Empirical Proof" figure quoted for items 1-4 (+12.4% precision, +9.1% recall, +18.5% macro-F1, 0.742 to 0.931 temporal consistency, 96.3% occupancy) is a design **target / placeholder**, not a result (see §7). The DACE items (7-10) are likewise targets until measured on pilot set P1 / dataset D1.
 
 ### 1. The Context-Gate Override Algorithm
-A novel post-processing algorithm that intercepts the output of a neural network (the 1D-CNN temporal classifier in v2.0; v1.0 has only a rule form, and on v2.0 it never fires by default because hand/object proximity is `hands_not_visible` unless `COGNEN_HAND_PROXIMITY=pose` is set, a wrist-based opt-in that is unvalidated on CCTV) and modifies its probabilities based on deterministic spatial heuristics. It resolves behavioral ambiguities by mathematically compressing confidence scores when context is unclear, or artificially boosting/suppressing specific classes (e.g., prioritizing `using_phone` over `attentive_reading` when a phone object and hand interaction are detected in close proximity).
-**Empirical Proof:** Resolves the biometric ambiguity between visually homologous states, yielding a **+12.4% precision** improvement for `using_phone` and **+9.1% recall** for `attentive_reading`.
+A novel post-processing algorithm that intercepts the output of a neural network (the 1D-CNN temporal classifier in v2.0; v1.0 has only a rule form; on v2.0 it is live by default through `COGNEN_HAND_PROXIMITY=pose`, a wrist-based proximity that is unvalidated on CCTV, and `off` disables it) and modifies its probabilities based on deterministic spatial heuristics. It resolves behavioral ambiguities by mathematically compressing confidence scores when context is unclear, or artificially boosting/suppressing specific classes (e.g., prioritizing `using_phone` over `attentive_reading` when a phone object and hand interaction are detected in close proximity).
+**Target (unmeasured):** the design goal is a **+12.4% precision** improvement for `using_phone` and **+9.1% recall** for `attentive_reading`; no ablation has been run.
 
 ### 2. Asymmetric "ConfusionPenaltyLoss" Function
 An asymmetric loss function algorithm designed to optimize the temporal classifier by minimizing high-cost pedagogical misclassifications. It applies custom mathematical penalties based on the real-world cost of a mistake—for instance, applying a `3.0×` penalty multiplier if the model predicts "reading" when the student is actually hiding a "phone", while applying standard `1.0×` multipliers for less critical errors.
-**Empirical Proof:** Aligns the optimization objective with real-world pedagogical utility, achieving a **+18.5% improvement in macro-F1** over standard cross-entropy.
+**Target (unmeasured):** the design goal is a **+18.5% improvement in macro-F1** over standard cross-entropy; no ablation has been run.
 
 ### 3. Context-Aware Attention Scoring + AR(1) Temporal Fusion
 A multimodal feature fusion algorithm that normalizes and combines 13 disparate signals (including Eye Aspect Ratio, Head Pose, Object One-Hots, and Proximity Codes) under AR(1) temporal dynamics. The algorithm applies specific domain-tuned weights to each feature (e.g., `gazeDeviation: 0.12`, `temporalPattern: 0.03`) and smooths the final 0–100 engagement score over time using an Exponential Moving Average (EMA) with a decay factor of `α=0.15`.
@@ -115,23 +132,23 @@ A multimodal feature fusion algorithm that normalizes and combines 13 disparate 
 
 ### 4. Prioritized Seat Mapping Assignment Algorithm (v2.0)
 A specialized spatial algorithm that maps tracked bounding boxes to physical classroom seats in multi-person environments. It utilizes a three-step prioritization logic based on Shapely polygons: (1) Primary validation via centroid containment, (2) Fallback validation using Intersection over Union (IoU ≥ 0.30), and (3) A tie-breaker heuristic for overlapping detections.
-**Empirical Proof:** Decouples persistent physical identities from transient bounding-box IDs, resulting in **96.3% occupancy tracking accuracy** in dense environments.
+**Target (unmeasured):** decouples persistent physical identities from transient bounding-box IDs; the **96.3% occupancy accuracy** figure is a placeholder, and no real-data occupancy evaluation exists. Seat matching is one-to-one.
 
 ### 5. Fatigue Onset Detection Algorithm (v1.0)
 A rolling-window statistical algorithm for the early detection of cognitive fatigue. It employs Ordinary Least Squares (OLS) linear regression to calculate the degradation slope of the attention score. Anomalies are triggered based on a composite condition requiring a negative slope (`< -0.5`), high confidence (`R² > 0.4`), and an average score drop below a defined threshold (`< 60`).
 
 ### 6. Cross-Modal Contradiction Vector (CMCV) — New
-A general, symmetric, per-frame disagreement statistic computed over **all** modality pairs (gaze, head-pose stability, ocular/PERCLOS state, object-context, hand-action), distinct from the Context-Gate Override above. Where the Context-Gate Override is a rule that fires on *one* known confusion (phone vs. reading) and discards the disagreement magnitude once applied, CMCV retains disagreement as a first-class signal in its own right, and classifies the *sign pattern* of disagreement into an actionable taxonomy: `fatigue_masking` (gaze looks attentive, posture/eyelids signal fatigue — the classic "eyes forced open" case), `prop_without_engagement` (a study object is visible but hands aren't on it — a gaming-the-system signal), `context_conflict` (surfaces the Context-Gate's territory as data rather than just clamping it), and `coherent`.
+A general, symmetric, per-frame disagreement statistic computed over **all** modality pairs (gaze, head-pose stability, ocular/PERCLOS state, object-context, hand-action), distinct from the Context-Gate Override above. Where the Context-Gate Override is a rule that fires on *one* known confusion (phone vs. reading) and discards the disagreement magnitude once applied, CMCV retains disagreement as a first-class signal in its own right, and classifies the *sign pattern* of disagreement into an actionable taxonomy: `fatigue_masking` (gaze looks attentive, posture/eyelids signal fatigue — the classic "eyes forced open" case), `prop_without_engagement` (a study object is visible but neither the hands nor the behaviour label show engagement with it — a gaming-the-system signal), `context_conflict` (surfaces the Context-Gate's territory as data rather than just clamping it), `coherent`, and `unclassified` (disagreement without a named pattern).
 ```
 o_i(t) ∈ [0,1] per modality (reuses already-computed sub-scores — zero new sensing, zero new model inference)
 d_ij(t) = |o_i(t) − o_j(t)|
 CI(t) = weighted mean of d_ij, EMA-smoothed at α=0.35 (faster than the α=0.15 attention EMA)
 ```
-Implemented in `v1.0/src/lib/contradiction-detector.ts` and ported to `v2.0/inference/contradiction_detector.py` (legacy path only). There is **no automated cross-language check** for CMCV; the two are kept in step by hand. **Empirical status**: computationally free and unit-tested against constructed synthetic conflict cases; full validation (precision/recall of the taxonomy against human-annotated ambiguity) requires labeled modality-conflict data that doesn't exist in DAiSEE/EngageNet — see [§14 Recommended Research Directions](#14-recommended-research-directions--paper-angles) below for how this could become a standalone publishable contribution.
+Implemented in `v1.0/src/lib/contradiction-detector.ts` and ported to `v2.0/inference/contradiction_detector.py` (legacy path only). The match is checked by the generated fixture `shared/fixtures/cmcv_cross_language.json`, which CI regenerates from the TypeScript and drift-guards. **Empirical status**: computationally free and unit-tested against constructed synthetic conflict cases; full validation (precision/recall of the taxonomy against human-annotated ambiguity) requires labeled modality-conflict data that doesn't exist in DAiSEE/EngageNet — see [§14 Recommended Research Directions](#14-recommended-research-directions--paper-angles) below for how this could become a standalone publishable contribution.
 
 
 ### 7-10. DACE contributions (v1.0 only; implemented and unit-tested, opt-in, not browser-tested; see [ARCHITECTURE.md §11](ARCHITECTURE.md#11-dace-downward-attention-context-engine-v10-only) and [v1.0 README §24](v1.0/README.md#24-dace-downward-attention-context-engine--details))
-DACE (Downward-Attention Context Engine) adds four contributions on top of items 1-6, bringing the total to **ten**. None is empirically validated; nothing has been run in a browser or against a camera (v1.0: 257 Vitest tests; v2.0 light tier 86 pass / 6 skip, neither involves DACE on real media). All accuracy, latency and FDR-DA figures are targets until measured on the pilot set (P1) and dataset (D1). DACE is off by default and does not change the legacy path. Items 1-6 are retained unchanged; in Stage 2 the Context-Gate may additionally be used as a model input rather than only a hard override, but it remains a named contribution.
+DACE (Downward-Attention Context Engine) adds four contributions on top of items 1-6, bringing the total to **ten**. None is empirically validated; nothing has been run in a browser or against a camera (v1.0: 326 Vitest tests; v2.0 light tier 268 pass / 43 skip, heavy tier 338 pass; none involves real media). All accuracy, latency and FDR-DA figures are targets until measured on the pilot set (P1) and dataset (D1). DACE is off by default and does not change the legacy path. Items 1-6 are retained unchanged; in Stage 2 the Context-Gate may additionally be used as a model input rather than only a hard override, but it remains a named contribution.
 7. **Context-conditioned looking-down penalty**: a downward head/eye posture is scored from gaze-corrected eye openness and desk-zone evidence (phone in use, writing, book, desk visibility) instead of a uniform pitch penalty.
 8. **Calibrated abstention with reason codes**: an explicit "Unsure" output (U1-U5; rules in Stage 1, conformal prediction in Stage 2) that holds the engagement score and is reported separately, never as a penalty.
 9. **Webcam eye-kinematics for reading while the head is pitched down** (Stage 2 feasibility study with a pre-registered go/no-go).
@@ -147,9 +164,9 @@ Supporting (not counted) additions: gaze-corrected eye openness/PERCLOS, hand-la
 | Feature                   | v1.0 (Browser / Extension)          | v2.0 (Server / CCTV)                      |
 | ------------------------- | ----------------------------------- | ----------------------------------------- |
 | **Primary Target**        | Single student learning at a desk   | Classroom, multi-student environment      |
-| **Input Source**          | Webcam (640×480 @ 5 FPS)            | RTSP / video file / USB camera (1280×720) |
+| **Input Source**          | Webcam (640×480, 200 ms analysis ticks) | RTSP / video file / USB camera (1280×720) |
 | **Tracking**              | Single person (first detected face) | Multi-person (ByteTrack MOT)              |
-| **Person/Face Detection** | face-api.js (TinyFaceDetector)      | YOLOv8-m (Person) + MediaPipe (FaceMesh)  |
+| **Person/Face Detection** | face-api.js (TinyFaceDetector)      | YOLOv8-m (Person) + MediaPipe (FaceLandmarker) |
 | **Object Detection**      | YOLOv8-nano ONNX (WebGPU/WASM)      | YOLOv8-s (PyTorch/GPU)                    |
 | **Behavior Classifier**   | 1D-CNN ONNX (Browser runtime)       | 1D-CNN ONNX (Server runtime)              |
 | **Output**                | Real-time Dashboard + PDF Report    | Room analytics WebSocket stream           |
@@ -160,10 +177,10 @@ Supporting (not counted) additions: gaze-corrected eye openness/PERCLOS, hand-la
 
 - **Context-Aware Attention Scoring:** Distinguishes phone use from book reading via YOLOv8 object detection and MediaPipe hand tracking. The uniform downward-gaze penalty is replaced with context-conditional scoring.
 - **Temporal Behavior Classification:** 1D-CNN sliding-window classifier (15 frames / 3 s) determining 6 classes: `attentive_screen`, `attentive_reading`, `using_phone`, `distracted`, `drowsy`, `absent`.
-- **Context-Gate Override:** Hard-rule post-processor that resolves phone/book ambiguity using object context when the model confidence is below a defined threshold. (On v2.0 it is inactive by default: it needs `holding_*` proximity, which exists only with `COGNEN_HAND_PROXIMITY=pose`.)
+- **Context-Gate Override:** Hard-rule post-processor that resolves phone/book ambiguity using object context when the model confidence is below a defined threshold. (On v2.0 it is active by default via `COGNEN_HAND_PROXIMITY=pose`; `off` disables it.)
 - **Multi-Person Room Analytics (v2.0):** Per-seat occupancy tracking with Shapely polygon IoU, ByteTrack persistent IDs, and a room-level attention heatmap.
 - **Flexible Video Input (v2.0):** RTSP CCTV streams, local video files, USB/built-in cameras via a unified `FrameSource` abstraction with configurable frame-skipping.
-- **Chrome Extension (v1.0):** Manifest V3 extension that works inside Google Meet / Zoom / Teams via an offscreen document.
+- **Chrome Extension (v1.0):** Manifest V3 extension that works inside Google Meet / Zoom / Teams (in-page analyser) and standalone (offscreen document), scoring like the web app's legacy path. Unit-tested only; never loaded in Chrome.
 
 ---
 
@@ -173,7 +190,7 @@ Supporting (not counted) additions: gaze-corrected eye openness/PERCLOS, hand-la
 
 ```mermaid
 flowchart LR
-    A[Webcam\n640×480 @ 5 FPS] --> B[face-api.js\nTinyFaceDetector]
+    A[Webcam\n640×480 · 200 ms ticks] --> B[face-api.js\nTinyFaceDetector]
     B --> C[68-pt Landmarks]
     C --> D[FaceMetricsAggregator\nEAR · MAR · Gaze\nHead Pose · Blink\nFatigue · PERCLOS]
 
@@ -205,12 +222,12 @@ flowchart TD
     BT --> SM[SeatMapper\nShapely polygon IoU]
 
     SM --> LOOP["Per-Person Loop × N"]
-    LOOP --> FL[Face Crop\n→ MediaPipe FaceMesh\n→ 68-pt Landmarks]
+    LOOP --> FL[Face Crop\n→ MediaPipe FaceLandmarker\n→ 68-pt Landmarks]
     LOOP --> FM[FaceMetrics\nEAR · PERCLOS · Gaze\nHead Pose · Fatigue]
     LOOP --> PA[PostureAnalysis\ntorso angle · head drop]
     LOOP --> OI[Object Interaction\nbook · phone proximity]
 
-    FL & FM & PA & OI --> FF[Feature Fusion\n13-dim vector / frame]
+    FL & FM & PA & OI --> FF[Feature Fusion\n15-dim vector / frame]
     FF --> TC[TemporalClassifier\n1D-CNN · 15-frame window\n+ context-gate override]
     TC --> BL[Behavior Label\n+ Attention Score]
 
@@ -227,16 +244,16 @@ Both versions of the app share an identical mathematical structure for determini
 ### 4.1 Perception Models
 
 - **YOLOv8 (Ultralytics):** Used across both versions for object detection, person detection, and pose estimation.
-- **MediaPipe:** Used for Hand tracking (v1.0) and FaceMesh 478-point extraction (v2.0).
+- **MediaPipe:** Hand tracking (v1.0, and optionally v2.0 with `COGNEN_HAND_PROXIMITY=hands`), FaceLandmarker 478-point extraction with transformation matrix and blendshapes (v2.0; also v1.0's opt-in DACE mode).
 - **face-api.js:** Used exclusively in v1.0 for optimized browser-based face detection.
 
 ### 4.2 1D-CNN Temporal Classifier
 
 A 3-layer Convolutional Neural Network (1D) evaluating a 15-frame sliding window to determine behavior.
 
-- **Input**: `(Batch, 13-dim feature vector, 15 frames)`
+- **Input**: v2.0 `(Batch, 15-dim feature vector, 15 frames)` (13 v1.0-compatible channels + 2 posture channels); v1.0 and older v2.0 models use the first 13
 - **Output**: Softmax probabilities for 6 behavior classes (`attentive_screen`, `attentive_reading`, `distracted`, `using_phone`, `drowsy`, `absent`).
-- **Parameters**: ~20,550
+- **Parameters**: 20,742 at 15 channels (20,550 at 13)
 
 ### 4.3 Statistical Analytics
 
@@ -277,7 +294,7 @@ The target hybrid dataset comprises **55,100 annotated temporal sequences** (15 
 | Object detection    | YOLOv8-nano ONNX via `onnxruntime-web` (WebGPU → WASM) |
 | Hand tracking       | MediaPipe Hands Lite (`@mediapipe/hands`)              |
 | Temporal classifier | Rule-based + ONNX 1D-CNN                               |
-| Auth / Storage      | Firebase Auth (Firestore initialised but unused)       |
+| Auth                | Firebase Auth (Firestore initialised but unused)       |
 | AI report           | Google Genkit + Gemini (PDF generation)                |
 | Extension           | Chrome MV3 + offscreen document                        |
 
@@ -285,14 +302,14 @@ The target hybrid dataset comprises **55,100 annotated temporal sequences** (15 
 
 | Layer                 | Technology                                     |
 | --------------------- | ---------------------------------------------- |
-| API server            | FastAPI + uvicorn                              |
+| API server            | FastAPI + uvicorn, API-key auth                |
 | Person detection      | YOLOv8-m                                       |
 | Object detection      | YOLOv8-s                                       |
 | Pose estimation       | YOLOv8-pose (17 COCO keypoints)                |
-| Face landmarks        | MediaPipe FaceMesh → 68-point ibug mapping     |
-| Multi-person tracking | ByteTrack (via `boxmot`)                       |
+| Face landmarks        | MediaPipe FaceLandmarker → 68-point ibug + pose matrix |
+| Multi-person tracking | ByteTrack (`boxmot` 16)                        |
 | Seat mapping          | Shapely polygon IoU                            |
-| Behavior classifier   | 1D-CNN ONNX (20,550 params, 0.02 ms/inference) |
+| Behavior classifier   | 1D-CNN ONNX (20,742 params; CNN alone ~0.02 ms, end-to-end latency unmeasured) |
 | Video input           | OpenCV `VideoCapture` — RTSP / file / camera   |
 | Dashboard             | FastAPI WebSocket push at 5 Hz                 |
 
@@ -304,7 +321,9 @@ The target hybrid dataset comprises **55,100 annotated temporal sequences** (15 
 CognEn-VCSir/
 ├── ARCHITECTURE.md              # System design source of truth (see §10 for post-upgrade status)
 ├── README.md                    # This consolidated master file
-├── .github/workflows/ci.yml     # Shared CI pipeline for v1.0 + v2.0 (see §15)
+├── .github/workflows/ci.yml     # Shared CI pipeline for v1.0 + v2.0 (see §15); also dependabot.yml, gitleaks.toml, ci/requirements-*.txt
+├── shared/fixtures/             # Generated cross-language fixtures (encode13, encode15_v2, cmcv) + their generators
+├── docs/proposals/evidence/     # Pitch-defect evidence (pitch_sim.py, legacy_pitch_constants.json)
 │
 ├── v1.0/                        # Next.js web app + Chrome Extension
 │   ├── src/
@@ -325,8 +344,9 @@ CognEn-VCSir/
 │   │   │   └── analytics.ts         # SessionAnalyticsEngine
 │   │   ├── components/dashboard/    # UI components
 │   │   ├── app/error.tsx, global-error.tsx # React error boundaries
-│   │   └── ai/flows/                # Genkit flows (session summary, PDF report)
-│   ├── extension/                   # Chrome Extension Source (host_permissions narrowed)
+│   │   ├── lib/server/              # Report-action security (ID-token verify, rate limit, zod)
+│   │   └── ai/flows/                # Genkit flow (generate-session-summary)
+│   ├── extension/                   # Chrome Extension (MV3): background, content, bridge, offscreen, popup, lib/ml-core.js
 │   ├── eslint.config.mjs            # ESLint flat config
 │   ├── vitest.config.ts             # Vitest test runner config
 │   ├── .env.example                 # Documents required env vars
@@ -334,7 +354,8 @@ CognEn-VCSir/
 │
 └── v2.0/                        # Python FastAPI server
     ├── server/
-    │   ├── main.py                  # FastAPI app, REST + WebSocket endpoints (hardened, see §10.4 in ARCHITECTURE.md)
+    │   ├── main.py                  # FastAPI app, REST + WebSocket endpoints (hardened, see ARCHITECTURE.md §10 and v2.0 README §24)
+    │   ├── security.py              # API-key auth, rate limits, WebSocket caps, log redaction
     │   ├── config.py                # Settings (env vars, model paths, thresholds, ROOM_ID_PATTERN)
     │   └── requirements.txt         # Pinned with == (see §15)
     ├── input/
@@ -343,20 +364,25 @@ CognEn-VCSir/
     │   ├── person_detector.py       # YOLOv8-m
     │   ├── object_detector.py       # YOLOv8-s
     │   ├── pose_estimator.py        # YOLOv8-pose
-    │   └── face_landmarks.py        # MediaPipe FaceMesh → 68-pt ibug mapping
+    │   ├── face_landmarks.py        # MediaPipe FaceLandmarker → 68-pt ibug + pose matrix + blendshapes
+    │   ├── hand_landmarks.py        # MediaPipe HandLandmarker (optional)
+    │   └── study_objects.py         # single COCO-id → study-object mapping
     ├── tracking/
     │   ├── byte_tracker.py          # ByteTrack wrapper (boxmot)
     │   └── seat_mapper.py           # Seat zone assignment (Shapely IoU)
     ├── features/
-    │   ├── face_metrics.py          # Python port of v1.0 scoring/ (corrected head-pose, real gaze)
-    │   └── feature_vector.py        # Canonical 13-dim feature encoder (new, see v2.0 README §23)
+    │   ├── face_metrics.py          # Python port of v1.0 legacy scoring/ (EAR/MAR, trackers)
+    │   ├── dace_measurement.py      # DACE measurement port (matrix pitch, blendshape gaze)
+    │   ├── track_features.py        # per-track metrics shared by server and training loaders
+    │   ├── hand_proximity.py / hand_object.py # hand/object proximity (pose wrists / HandLandmarker)
+    │   └── feature_vector.py        # Canonical 13-dim and 15-dim encoders (see v2.0 README §5)
     ├── inference/
     │   ├── behavior_classifier.py   # Temporal 1D-CNN + context-gate override
     │   ├── contradiction_detector.py # Cross-Modal Contradiction Vector (new)
     │   └── room_analyzer.py         # Main orchestrator: run_source() pipeline loop
     ├── training/                    # 1D-CNN model architecture, CLI, datasets, penalty_matrix.py
-    ├── evaluation/                  # Full evaluation suite (accuracy, F1, latency — no longer fabricates results)
-    ├── models/                      # YOLOv8 weights and behavior_classifier_v2.onnx
+    ├── evaluation/                  # Evaluation suite; reports/ holds the v3 synthetic note, reports/archive/ the RETRACTED 2026-03 outputs
+    ├── models/                      # YOLOv8 weights, MediaPipe .task files, behavior_classifier_v3.onnx (served; synthetic-only)
     ├── pyproject.toml               # ruff + mypy config
     ├── tests/                       # pytest — see v2.0 README §17/§25 for the test tier split
     └── run_analyzer.py              # CLI entry point
@@ -366,37 +392,36 @@ CognEn-VCSir/
 
 ## 7. Performance Metrics
 
-> ⚠ **TARGET METRICS — not yet measured on real, held-out data.** The table
-> below states design targets, not empirical results. No training run
-> against a real, subject-disjoint test set has produced these numbers yet:
-> there is no 55,100-sequence dataset, no DAiSEE/EngageNet integration run,
-> and no committed evaluation log backing them. The only real artifacts
-> produced so far are the synthetic-only smoke tests in
-> [`v2.0/evaluation/reports/experiment_report.md`](v2.0/evaluation/reports/experiment_report.md)
-> and [`experiment_report_v2.md`](v2.0/evaluation/reports/experiment_report_v2.md),
-> which are trained and tested on the same synthetic AR(1) generator
-> (train seed=42, test seed=43) — a circular evaluation, not a
-> generalization test — and say so explicitly. `v2.0/evaluation/evaluate.py`
-> previously fabricated numeric scores (`pred = label if rng.random() > 0.2
-> else random_class`) when no real dataset was supplied; this has been
-> fixed to report `"status": "SKIPPED"` instead of a synthesized score. See
-> the training/evaluation pipeline plan for the work required to produce
-> real numbers here.
+> ⚠ **TARGET METRICS — not yet measured on real, held-out data.** The tables
+> below state design targets, not empirical results. No training run against
+> a real, subject-disjoint test set exists: there is no 55,100-sequence
+> dataset, no DAiSEE/EngageNet run, and no committed real-data evaluation
+> log. The only measured numbers are on **synthetic** data from the same
+> hand-written generator the model was trained on, so they are circular. They
+> are summarised in
+> [`v2.0/evaluation/reports/behavior_classifier_v3_synthetic_note.md`](v2.0/evaluation/reports/behavior_classifier_v3_synthetic_note.md).
+> The earlier `eval_20260309_*.json` / `experiment_report*.md` outputs were
+> produced by an `evaluate.py` that fabricated its results (synthetic "80%
+> correct" predictions, noise-injected tracking ground truth, CNN-only
+> latency); they are **retracted** and archived in
+> [`v2.0/evaluation/reports/archive/`](v2.0/evaluation/reports/archive/README.md).
+> `evaluate.py` has been rewritten: it reports `SKIPPED` without real data
+> and stamps every report with `data_source` and `claims_allowed`.
 
 ### 7.1 Quantitative Evaluation (Targets)
 The target dataset composition is 55,100 annotated temporal windows spanning both single-subject (proximal webcam, v1.0) and multi-subject (classroom CCTV, v2.0) environments, sharing the identical underlying 1D-CNN temporal classification core. These are the targets the architecture is designed to meet, not measured results:
 
-| Metric | Target | Measured (synthetic smoke-test) |
+| Metric | Target | Measured |
 |---|---|---|
-| Behavior Accuracy | ≥ 0.85 | see experiment reports — circular eval, not comparable |
-| F1-macro | ≥ 0.80 | see experiment reports — circular eval, not comparable |
+| Behavior Accuracy | ≥ 0.85 | not measured on real data (synthetic hold-out 1.000 is circular) |
+| F1-macro | ≥ 0.80 | not measured on real data (synthetic hold-out 1.000 is circular) |
 | Precision (`using_phone`) | ≥ 0.90 | not yet measured |
 | Recall (`attentive_reading`) | ≥ 0.85 | not yet measured |
-| Temporal Consistency Coefficient | ≥ 0.90 | not yet measured |
+| Temporal Consistency Coefficient | ≥ 0.90 | not yet measured (the metric is now non-vacuous) |
 | Tracking MOTA (v2.0) | ≥ 0.75 | not yet measured on real video |
 | Tracking IDF1 (v2.0) | ≥ 0.80 | not yet measured on real video |
-| Seat Occupancy Accuracy (v2.0) | ≥ 0.95 | no real-data evaluation path implemented yet |
-| v2.0 inference latency P95 | < 100 ms | measured on synthetic input, see latency_benchmark.py |
+| Seat Occupancy Accuracy (v2.0) | ≥ 0.95 | not yet measured on real video |
+| v2.0 end-to-end latency P95 | < 100 ms (GPU) | not measured (the stage benchmark in `latency_benchmark.py` needs real models and video; the CNN alone is ~0.02 ms) |
 
 ### 7.2 Baseline Comparisons (Targets)
 Two baseline paradigms the architecture is intended to beat, pending real evaluation:
@@ -417,7 +442,7 @@ Three ablations are planned for the v2.0 classifier (removing Context-Gate Overr
    npm install
    ```
 
-2. **Configure Environment:** Create `.env.local` with your Firebase and Genkit keys.
+2. **Configure Environment:** `cp .env.example .env.local` and fill in your Firebase and Gemini keys (never commit real values).
 
 3. **Set up Models:**
 
@@ -427,8 +452,10 @@ Three ablations are planned for the v2.0 classifier (removing Context-Gate Overr
 
 4. **Start Dev Server:**
    ```bash
-   npm run dev
+   npm run dev      # http://localhost:9002
    ```
+
+   Requires Node 24 (what CI uses). The YOLOv8-nano object model is not in the repo; without it the app runs on the legacy weights.
 
 For detailed Chrome Extension setup, view the [v1.0 README](v1.0/README.md).
 
@@ -461,10 +488,14 @@ For detailed Chrome Extension setup, view the [v1.0 README](v1.0/README.md).
    python3 run_analyzer.py --source rtsp --url "rtsp://admin:pass@192.168.1.100:554/ch1" --room room_default --show
    ```
 
-4. **Run FastAPI Server:**
+4. **Run FastAPI Server (API key required):**
    ```bash
-   uvicorn server.main:app --host 0.0.0.0 --port 8000
+   export COGNEN_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+   python -m server.main            # binds 127.0.0.1 by default
+   # non-loopback binds are refused without COGNEN_API_KEY
    ```
+
+   Requires Python 3.10-3.12. For a 15 FPS source set `COGNEN_PROCESS_EVERY_N=3` so analysis runs at the 5 Hz cadence the model was trained on. The full ML stack has not been smoke-tested on real video or a GPU.
 
 For full REST API and WebSocket documentation, view the [v2.0 README](v2.0/README.md).
 
@@ -476,13 +507,19 @@ For full REST API and WebSocket documentation, view the [v2.0 README](v2.0/READM
 
 ```bash
 cd v2.0
-python3 -m pytest tests/ -v   # light tier: 86 pass / 6 skip; includes cross-language contract, hand-proximity and pitch-characterisation tests
+python3 -m pytest tests/ -v   # heavy tier (full requirements): 338 passed
+# light tier (what CI runs): 268 passed / 43 skipped
+python3 -m pytest tests/ --ignore=tests/test_tracking.py --ignore=tests/test_v2_pipeline.py -v
+ruff check .
 ```
+
+Includes the cross-language contract tests (generated fixtures), pitch characterisation, hand-proximity, server-security and room-analyzer suites. All use synthetic inputs and mocks.
 
 ### v2.0 — Evaluation Suite
 
 ```bash
-python3 v2.0/evaluation/evaluate.py --model v2.0/models/behavior_classifier_v2.onnx --seat_map v2.0/data/seat_maps/room_default.json
+# needs a real classroom dataset; without --classroom each section reports SKIPPED
+python3 v2.0/evaluation/evaluate.py --model v2.0/models/behavior_classifier_v3.onnx --classroom /path/to/dataset --seat_map v2.0/data/seat_maps/room_default.json
 ```
 
 ### v1.0 — Type Checks
@@ -490,7 +527,7 @@ python3 v2.0/evaluation/evaluate.py --model v2.0/models/behavior_classifier_v2.o
 ```bash
 cd v1.0
 npm run typecheck && npm run lint
-npm test        # Vitest, 257 tests (legacy-equivalence golden fixtures + DACE suites; browser libs mocked)
+npm test        # Vitest, 326 tests in 33 files (golden fixtures, extension equivalence, DACE, report security; browser libs mocked)
 ```
 
 ---
@@ -501,7 +538,8 @@ npm test        # Vitest, 257 tests (legacy-equivalence golden fixtures + DACE s
 2. **On-Premise:** All inference runs locally (in-browser for v1.0, on local GPU for v2.0).
 3. **Anonymization:** v2.0 uses track IDs only; no name mapping is implemented.
 4. **Data Retention:** Auto-purge is **not implemented**: `DATA_RETENTION_HOURS` (24 h) exists in `v2.0/server/config.py` but nothing reads it. v1.0 DACE evaluation logs are manual-download only and have no retention limit yet.
-5. **Cloud calls:** v1.0 report export sends derived session statistics (no frames) to Gemini via Genkit; nothing is written to Firestore.
+5. **Cloud calls:** v1.0 report export sends derived session statistics (no frames) to Gemini via Genkit, only for a caller with a valid Firebase ID token (rate-limited, input validated); nothing is written to Firestore. v2.0 makes no cloud calls.
+6. **v2.0 API access:** every endpoint except `/healthz` needs an `X-API-Key`; stream URLs are SSRF-checked; see v2.0 README §24.
 
 ---
 
@@ -514,16 +552,16 @@ To ensure rigorous reproducibility, the hardware, software, and hyperparameter c
 |---|---|---|
 | **GPU Acceleration** | Integrated (WebGPU / WASM) | Nvidia RTX 3060 (CUDA ≥ 8.6) |
 | **System RAM** | 8 GB minimum | 16 GB minimum |
-| **Video Input** | 640×480 @ 5 FPS | 1280×720 @ 30 FPS |
-| **Pipeline Throughput** | ~125 ms/frame | ~35 ms/frame (~28 FPS) |
-| **Isolated Classifier Latency** | ~0.02 ms per subject | ~0.02 ms per subject |
+| **Video Input** | 640×480, 200 ms ticks | 1280×720 @ 15 FPS (config; ~5 analysis FPS with `process_every_n = 3`) |
+| **Pipeline Throughput** | ~125 ms/frame (estimate, unmeasured) | ~35 ms/frame (estimate, unmeasured) |
+| **Isolated Classifier Latency** | ~0.02 ms per subject (CNN only) | ~0.02 ms per subject (CNN only) |
 
 ### 12.2 Training Hyperparameters (1D-CNN Temporal Classifier)
-The 1D-CNN architecture (3 Conv1D layers + BatchNorm + Global Average Pooling + Linear, totaling ~20,550 parameters) was optimized using the following configuration:
+The 1D-CNN architecture (3 Conv1D layers + BatchNorm + Global Average Pooling + Linear, totaling 20,742 parameters at 15 input channels; 20,550 at 13) was optimized using the following configuration:
 *   **Optimizer:** `AdamW` with Weight Decay of `1 × 10⁻⁴`
 *   **Learning Rate:** Base `1 × 10⁻³`, decayed via `CosineAnnealingLR` (Min `1 × 10⁻⁵`)
 *   **Batch Size:** `64`
-*   **Max Epochs:** 50 (Early Stopping Patience of 15 epochs)
+*   **Max Epochs:** 50 (CLI default; early-stopping patience 10 epochs by default)
 *   **Loss Function:** Custom `ConfusionPenaltyLoss` (label smoothing `0.05`). 
 
 ### 12.3 Inference Pipeline Thresholds
@@ -531,7 +569,7 @@ The 1D-CNN architecture (3 Conv1D layers + BatchNorm + Global Average Pooling + 
 *   **Phone Override Clamp:** `p_phone ← max(p_phone, 0.85)`
 *   **Reading Override Clamp:** `p_read ← max(p_read, 0.80)`
 *   **Ambiguity Confidence Compression:** `confidence × 0.70`
-*   **EMA Decay Factor (α):** `0.15`
+*   **EMA Decay Factor (α):** `0.15` (v1.0 `MLEngine` only; v2.0 has no EMA)
 *   **ByteTrack Seat IoU Assignment Threshold:** `≥ 0.30`
 
 
@@ -539,7 +577,7 @@ The 1D-CNN architecture (3 Conv1D layers + BatchNorm + Global Average Pooling + 
 
 ## 13. Peer Review Q&A — Academic Reference
 
-> ⚠ **Read this before the answers below.** This section was originally written as if the numbers it quotes (86.5% accuracy, F1 0.852, the ablation deltas, etc.) were measured results. They are not — see [§7's honesty banner](#7-performance-metrics) for the full account: no real, subject-disjoint test set has been evaluated; `v2.0/evaluation/evaluate.py` was found to actively fabricate results when no real dataset was supplied (now fixed to report `SKIPPED` instead); and the one real training run that exists was evaluated circularly (trained and tested on the same synthetic generator). The Q&A below is kept **as a template for the answers a real evaluation would need to produce** — the questions themselves are exactly what a reviewer would ask, and the *structure* of each answer (what to report, at what precision, with what caveats) is sound. Treat every specific number below as a placeholder pending real evaluation, not as a citable result. Q12 (added below) covers what's needed to convert this from a template into real answers.
+> ⚠ **Read this before the answers below.** This section was originally written as if the numbers it quotes (86.5% accuracy, F1 0.852, the ablation deltas, etc.) were measured results. They are not — see [§7's honesty banner](#7-performance-metrics) for the full account: no real, subject-disjoint test set has been evaluated; `v2.0/evaluation/evaluate.py` was found to actively fabricate results (those outputs are retracted and archived in `v2.0/evaluation/reports/archive/`; the runner now reports `SKIPPED` without real data); and the only training runs that exist were evaluated circularly (trained and tested on the same synthetic generator). The Q&A below is kept **as a template for the answers a real evaluation would need to produce** — the questions themselves are exactly what a reviewer would ask, and the *structure* of each answer (what to report, at what precision, with what caveats) is sound. Treat every specific number below as a placeholder pending real evaluation, not as a citable result. Q12 (added below) covers what's needed to convert this from a template into real answers.
 
 **Q1. What are the accuracy, precision, recall, and F1-score values for both single-student and multi-person setups?**
 > *(Template answer — numbers below are targets, not measured results; see banner above.)*
@@ -582,7 +620,7 @@ The 1D-CNN temporal classifier was optimized using the following rigorous config
 *   **Optimizer:** `AdamW` with a Weight Decay of `1 × 10⁻⁴`
 *   **Learning Rate:** Base rate of `1 × 10⁻³`, decayed via a `CosineAnnealingLR` scheduler to a minimum of `1 × 10⁻⁵`
 *   **Batch Size:** `64`
-*   **Max Epochs:** 50, strictly constrained by an Early Stopping Patience of 15 epochs to prevent overfitting.
+*   **Max Epochs:** 50 (CLI default), with early stopping (CLI default patience 10; the v3 run used 40 epochs and patience 8).
 *   **Loss Function:** Custom `ConfusionPenaltyLoss` with a label smoothing factor of `0.05`.
 
 **Q7. What baseline methods did you compare your proposed method against?**
@@ -599,7 +637,7 @@ Existing automated student engagement monitoring systems fail to disambiguate vi
 This paper presents **CognEn**, a real-time cognitive engagement monitoring framework that resolves these limitations through novel algorithmic contributions (ten in total, see above), three of which are central to the v2.0 classifier: (1) a **Context-Gate Override Algorithm** for biometric ambiguity resolution, (2) an **Asymmetric ConfusionPenaltyLoss** function for pedagogically-weighted optimization, and (3) a **Multimodal Autoregressive Temporal Fusion** architecture for temporally consistent behavioral inference — deployed across both a single-student webcam environment (v1.0) and a multi-student CCTV classroom environment (v2.0).
 
 **Q9. What is the name and size of the dataset used in your experiments? Please provide details on preprocessing, splits, and any other relevant information.**
-> *(Template answer — the "CognEn Hybrid Behavioral Temporal Dataset" as described has not been assembled; see [§4.4](#44-dataset-specification--preprocessing-target-composition). The preprocessing/splitting **methodology** described below is sound and implemented — e.g. the split-by-subject-not-by-window fix in `train_classifier.py`'s `GroupShuffleSplit` — it just hasn't been run against 55,100 real sequences.)*
+> *(Template answer — the "CognEn Hybrid Behavioral Temporal Dataset" as described has not been assembled; see [§4.4](#44-dataset-specification--preprocessing-target-composition). The preprocessing/splitting **methodology** described below is sound and implemented — e.g. the split-by-subject-not-by-window fix in `train_classifier.py`'s `GroupShuffleSplit` — it just hasn't been run against 55,100 real sequences. The loaders now use their own subject-level train/val splits asserted group-disjoint, not `GroupShuffleSplit` on pooled windows.)*
 The empirical validation utilized the **CognEn Hybrid Behavioral Temporal Dataset**, comprising **55,100 annotated temporal sequences** (15 frames per window; 3-second behavioral segments sampled at 5 Hz), balanced across 6 behavioral classes (`attentive_screen`, `attentive_reading`, `using_phone`, `distracted`, `drowsy`, `absent`).
 
 *   **Construction — Phase I (Synthetic, 42,600 sequences):** Class-conditional sequences generated using AR(1) autoregressive dynamics (autocorrelation coefficient ρ = 0.60–0.90 per feature channel) to simulate realistic behavioral continuity grounded in biometric literature.
@@ -613,7 +651,7 @@ The empirical validation utilized the **CognEn Hybrid Behavioral Temporal Datase
 
 **Q10. What evaluation protocol did you use (e.g., k-fold cross-validation, train/test split ratios, random seeds)?**
 > *(Template answer describing the intended protocol — genuinely implemented pieces: the `GroupShuffleSplit`-based leakage-safe split, and a precisely-defined Temporal Consistency Coefficient in `evaluation/behavior_metrics.py::temporal_consistency()` that conditions on ground-truth stability, fixing a version that couldn't actually distinguish flicker from real transitions. Not yet run against real held-out data.)*
-A fixed train/validation/test split protocol with strict seed isolation was employed to prevent data leakage. The training set (42,600 sequences) was optimized over up to 50 epochs with online stochastic augmentation using AdamW (lr = 1×10⁻³, weight decay = 1×10⁻⁴) and CosineAnnealingLR decay (min lr = 1×10⁻⁵), with early stopping at patience = 15 epochs. The validation holdout (1,800 sequences, deterministic) was used solely for early stopping — not for architecture selection. Final performance was reported once on the held-out test set (3,000 sequences, `seed=43`), evaluated using macro-averaged F1, per-class precision and recall (with emphasis on the pedagogically critical `using_phone` precision and `attentive_reading` recall pair), overall accuracy, and Temporal Consistency Coefficient over stable 10-second behavioral windows. For the ablation study, three conditions (−Context-Gate Override, −ConfusionPenaltyLoss, −AR(1) Autocorrelation) were each retrained from scratch under the identical split and seed with all other components held constant, isolating individual contribution magnitudes.
+A fixed train/validation/test split protocol with strict seed isolation was employed to prevent data leakage. The training set (42,600 sequences) was optimized over up to 50 epochs with online stochastic augmentation using AdamW (lr = 1×10⁻³, weight decay = 1×10⁻⁴) and CosineAnnealingLR decay (min lr = 1×10⁻⁵), with early stopping (CLI default patience = 10 epochs). The validation holdout (1,800 sequences, deterministic) was used solely for early stopping — not for architecture selection. Final performance was reported once on the held-out test set (3,000 sequences, `seed=43`), evaluated using macro-averaged F1, per-class precision and recall (with emphasis on the pedagogically critical `using_phone` precision and `attentive_reading` recall pair), overall accuracy, and Temporal Consistency Coefficient over stable 10-second behavioral windows. For the ablation study, three conditions (−Context-Gate Override, −ConfusionPenaltyLoss, −AR(1) Autocorrelation) were each retrained from scratch under the identical split and seed with all other components held constant, isolating individual contribution magnitudes.
 
 **Q11. What is the specific methodology detail missing from the paper?**
 > ✅ **Update: item 1 below is RESOLVED.** The complete 6×6 penalty matrix is now implemented in `v2.0/training/penalty_matrix.py`, with every one of the 30 off-diagonal pairs assigned a documented, pedagogically-reasoned weight (verified by `tests/test_penalty_matrix.py` to have full coverage and intentional asymmetry). It has NOT yet been empirically validated — the weights are a design proposal derived from cost reasoning, not fit to labeled data — but the reproducibility gap this question originally identified (an incomplete, unreproducible matrix) is closed. Items 2 and 3 below remain open. See §14 for how to turn "the matrix exists" into "the matrix is validated."
@@ -626,10 +664,11 @@ The three specific sub-details originally identified as missing:
 3.  **Still open** — **A sensitivity analysis for the Context-Gate confidence threshold `τ = 0.80`** — the value is used as a fixed inference threshold but no ablation over candidate values (e.g., τ ∈ {0.65, 0.70, 0.75, 0.80, 0.85}) has been run to justify this specific operating point. This requires real evaluation data (§14).
 
 **Q12. What changed since the original methodology write-up, and what would it take to make the claimed numbers real? (Added)**
-Three categories of change:
+Four categories of change:
 1. **Fabrication removed, not just documented.** `v2.0/evaluation/evaluate.py` was found to actively synthesize fake predictions when no real dataset was supplied (`pred = label if rng.random() > 0.2 else random_class`), rather than merely lacking real data — a materially different problem (an evaluation harness that lies vs. one that's simply incomplete). Fixed: it now reports `"status": "SKIPPED"`.
 2. **Real, verified pipeline bugs fixed independent of the "make numbers real" effort**: a live train/inference feature-encoding mismatch (gaze/pitch/yaw encoded as `[0,1]` in training-time feature extraction vs. `[-1,1]` at inference and in the synthetic generator — these would have silently taught a model the wrong decision boundary), a train/val leakage bug (naive random split let overlapping sliding windows from the same subject land on both sides), and a Temporal Consistency Coefficient that structurally could not distinguish flicker from real transitions (it never tracked ground truth). Full list: [v2.0 README §23](v2.0/README.md#23-training-pipeline-correctness-fixes).
-3. **What's still required for real numbers**: acquiring DAiSEE (academic access request) and/or EngageNet, recording or licensing classroom footage (neither DAiSEE nor EngageNet has object-interaction annotations, so `using_phone`/`attentive_reading`/`absent` labels need a supplementary source), running the now-correct training pipeline against that real data with a subject-disjoint split, and running the three ablations for real. See §14 for a prioritized breakdown of this work as distinct research contributions rather than one monolithic "collect data" task.
+3. **Later fixes (unit-tested only)**: the DACE measurement port, the corrected landmark map, the live Context-Gate, a 15-dim posture vector, 5 Hz timestamp-based sequence encoding, real IDF1/MOTA, a deployed-classifier evaluation and a per-stage latency benchmark. Details: [v2.0 README §23](v2.0/README.md#23-training-pipeline-correctness-fixes) and [ARCHITECTURE.md §10](ARCHITECTURE.md).
+4. **What's still required for real numbers**: acquiring DAiSEE (academic access request) and/or EngageNet, recording or licensing classroom footage (neither DAiSEE nor EngageNet has object-interaction annotations, so `using_phone`/`attentive_reading`/`absent` labels need a supplementary source), running the now-correct training pipeline against that real data with a subject-disjoint split, and running the three ablations for real. See §14 for a prioritized breakdown of this work as distinct research contributions rather than one monolithic "collect data" task.
 
 ---
 
@@ -665,14 +704,21 @@ If the goal is one real, defensible published contribution as fast as possible: 
 
 ## 15. CI/CD & Repository Hygiene
 
-`.github/workflows/ci.yml` is a single workflow file, shared by both `v1.0` and `v2.0`, that runs on every push and pull request targeting `main`. Jobs are path-filtered (via a `changes` detection job using `dorny/paths-filter`) so a v1.0-only change doesn't waste time running v2.0 jobs and vice versa.
+`.github/workflows/ci.yml` is one workflow shared by `v1.0` and `v2.0`. It runs on push and pull request to `main` and `dev`, and `workflow_dispatch` runs **every** job regardless of paths (`gh workflow run ci.yml --ref dev`). Jobs are path-filtered by a `changes` job (`dorny/paths-filter`) so a v1.0-only change doesn't run v2.0 jobs and vice versa; `shared/**` and `docs/proposals/evidence/**` count for both. A manual run on `dev` had all 12 jobs green; that proves the pipeline, not the product.
 
-| Scope | Checks |
+| Job | What it does |
 |---|---|
-| v1.0 | `npm run typecheck`, `npm run lint` (ESLint, `eslint.config.mjs` — previously no config existed), `npx vitest run`, `npm run build` (previously would succeed even with type/lint errors due to now-removed `ignoreBuildErrors`/`ignoreDuringBuilds` flags), an **informational** `npm audit --audit-level=high` (`continue-on-error`; advisories appear daily), plus DACE guards in the test job: regenerate `shared/fixtures/encode13_cross_language.json`, `git diff --exit-code` on `shared/` and `docs/proposals/evidence/`, and `python docs/proposals/evidence/pitch_sim.py` (numpy only) |
-| v2.0 | `ruff check .` (previously no lint config existed), `mypy .` (informational only — `continue-on-error: true`, given a pre-existing, individually-verified-benign backlog of ~26 findings from the first pass), the lightweight pytest tier (`numpy`/`pytest`/`scikit-learn` only — excludes torch/opencv/ultralytics-dependent tests), an **informational** `pip-audit --no-deps --disable-pip` on `requirements.txt` (the file is not currently resolvable, so it audits pins as written) |
-| Repo-wide | Secret scanning via `gitleaks` |
+| `changes` | Path detection (needs `pull-requests: read`) |
+| `v1-typecheck`, `v1-lint`, `v1-build` | `npm run typecheck`, `npm run lint`, `npm run build` (build with the CI environment) on Node 24 |
+| `v1-test` | `npx vitest run`, then regenerates `shared/fixtures/encode13_cross_language.json`, `cmcv_cross_language.json` (TypeScript), `encode15_v2.json` (Python) and runs `docs/proposals/evidence/pitch_sim.py`; fails on any `git diff` or untracked file under `shared/` or `docs/proposals/evidence/` |
+| `v1-audit` | `npm audit --audit-level=low`: **blocks on any advisory** |
+| `v2-lint` | `ruff check` |
+| `v2-typecheck` | `mypy .` (informational, `continue-on-error`) |
+| `v2-test` | Light pytest tier (numpy/pytest/scikit-learn/onnxruntime) installed with the production pins as constraints; torch/opencv/ultralytics tests are excluded and run locally |
+| `v2-audit` | `pip-audit` **resolves** `server/requirements.txt` (full ML stack) and blocks; `V2_AUDIT_RESOLVE` switches to a pins-only informational fallback if the pins ever stop resolving together |
+| `secret-scan` | gitleaks (config `.github/gitleaks.toml` allowlists the public Firebase web key, model checksums and fake test keys; needs `pull-requests: read`) |
+| `all-checks-passed` | Aggregates every job including `changes` (a path-filtered skip counts as passing) into one required status |
 
-The workflow sets top-level `permissions: contents: read, pull-requests: read` (required by paths-filter and gitleaks on PRs); the path filter treats `shared/**` and `docs/proposals/evidence/**` as both v1 and v2 changes. The workflow has not been re-run on GitHub since these changes. A final `all-checks-passed` job aggregates every job's result (treating a path-filtered-out/skipped job as passing) into one required status check, so branch protection only needs to reference a single job rather than every individual check.
+Hygiene: every action is pinned to a full commit SHA (tag in a comment), the runner is `ubuntu-24.04` (not `ubuntu-latest`), every job has a timeout and `contents: read` permissions, superseded runs are cancelled except on `main`, and Dependabot (`.github/dependabot.yml`) opens weekly grouped PRs against `dev` with a 14-day cooldown. CI tool pins live in `.github/ci/requirements-*.txt`.
 
-**Dependency hygiene**: `v1.0`'s `npm audit` findings went from 107 (6 critical, 22 high) to 35 (0 critical, 0 high) via `npm audit fix`, targeted version bumps, and `package.json` `overrides` for transitive dependencies pulled in by `genkit`. The redundant `yarn.lock` — checked in alongside `package-lock.json` for the same `package.json`, causing GitHub's Dependabot to scan both and roughly double-count the same underlying issues — was removed. `v2.0`'s `server/requirements.txt` is now pinned with `==` rather than `>=` (every pin verified to exist on PyPI) for reproducible installs.
+**Dependency hygiene**: `v1.0` `npm audit` went from 107 findings (6 critical, 22 high) to **0** (see [v1.0 README §23](v1.0/README.md#23-security--dependency-hygiene)). `v2.0/server/requirements.txt` is pinned with `==` on a numpy 2.x stack that resolves (the old pin set did not), for Python 3.10-3.12; the default Linux torch wheel is a CUDA 13 build, so use the CPU index on CPU-only servers.

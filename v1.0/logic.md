@@ -1,6 +1,6 @@
 # CognEn - Technical Architecture & ML Logic
 
-> **Status note.** This file describes the legacy scoring path (DACE off) of the v1.0 web app and has been corrected to match `src/lib/scoring/constants.ts`. Authoritative sources: `src/lib/scoring/` (code), `ARCHITECTURE.md` (design; DACE in §11) and `v1.0/README.md`. Corrected here: EMA alpha 0.15 (the Chrome extension uses 0.35 and its own constants), attention thresholds 70/40, head-pose gains/normalizer, legacy feature weights, and gaze (eyelid-based, not iris-based). Known defect: the legacy pitch value has no neutral offset and rises (not falls) when the head tilts down, so pitch-based "looking down" logic is unreliable; the opt-in DACE mode (README §24) addresses this. Nothing in DACE has been browser-tested.
+> **Status note.** This file describes the legacy scoring path (DACE off) of the v1.0 web app and has been corrected to match `src/lib/scoring/constants.ts`. Authoritative sources: `src/lib/scoring/` (code), `ARCHITECTURE.md` (design; DACE in §11) and `v1.0/README.md`. Corrected here: EMA alpha 0.15 (web app and Chrome extension; the extension was rewritten to match), attention thresholds 70/40, head-pose gains/normalizer, legacy feature weights, and gaze (eyelid-based, not iris-based). Known defect: the legacy pitch value has no neutral offset and rises (not falls) when the head tilts down, so pitch-based "looking down" logic is unreliable; the opt-in DACE mode (README §24) addresses this. Nothing in DACE has been browser-tested.
 
 ## Overview
 
@@ -14,7 +14,7 @@ CognEn (Cognitive Engagement) uses computer vision and machine learning to analy
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Input Pipeline                           │
 ├─────────────────────────────────────────────────────────────────┤
-│  Webcam Feed (640×480; legacy web loop is rAF-bound, prediction recorded at 1 Hz; DACE mode ticks every 200 ms)                                  │
+│  Webcam Feed (640×480; fixed 200 ms ticks, prediction recorded at 1 Hz)  │
 │         ↓                                                        │
 │  face-api.js TinyFaceDetector                                   │
 │         ↓                                                        │
@@ -210,7 +210,7 @@ To reduce jitter, scores pass through an Exponential Moving Average:
 smoothed_score = α × raw_score + (1 - α) × prev_smoothed_score
 ```
 
-With **α = 0.15** (web app; the extension uses 0.35), the system responds to changes within 1-2 seconds while filtering noise.
+With **α = 0.15** (web app and extension), the system responds to changes within 1-2 seconds while filtering noise.
 
 ---
 
@@ -226,45 +226,42 @@ With **α = 0.15** (web app; the extension uses 0.35), the system responds to ch
 
 ## Extension Architecture
 
+Details: `extension/README.md`. Unit-tested only (`extension-equivalence.test.ts`); never loaded in Chrome.
+
 ### Component Flow
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Popup.js      │────▶│  Background.js  │────▶│  Content.js     │
-│   (UI)          │     │  (Coordinator)  │     │  (Meet Inject)  │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                                         │
-                        ┌─────────────────┐              │
-                        │  Offscreen.js   │◀─────────────┘
-                        │  (Standalone)   │   (or inject into Meet)
-                        └─────────────────┘
-                                 │
-                        ┌─────────────────┐
-                        │  ml-core.js     │
-                        │  (ML Engine)    │
-                        └─────────────────┘
+Popup.js (UI) ──▶ Background.js (service worker: session record, badge, alarms, notifications)
+                      │
+         ┌────────────┴─────────────────────────────┐
+         ▼ standalone                               ▼ Meet / Zoom / Teams
+   Offscreen.js (own camera,                  Content.js (MAIN world, analyser + widget)
+   200 ms setTimeout loop)                          │ HMAC-signed postMessage
+         │                                          ▼
+         └──── both use lib/ml-core.js        Bridge.js (ISOLATED world: verify MAC,
+               (legacy-path port)                    replay check) ──▶ chrome.runtime ──▶ Background.js
 ```
 
 ### Data Flow
 
-1. **Detection**: face-api.js extracts 68 facial landmarks
-2. **Metrics**: `FaceMetricsAggregator` computes all features
-3. **Prediction**: `MLEngine` produces attention score and state
-4. **Storage**: Results written to localStorage (Meet mode) or chrome.storage
-5. **Display**: Widget on page + popup UI read from storage
+1. **Detection**: face-api.js extracts 68 facial landmarks (200 ms tick)
+2. **Metrics**: the `ml-core.js` aggregator computes all features
+3. **Prediction**: the `ml-core.js` engine (legacy weights, EMA 0.15, thresholds 70/40) produces score and state once per second
+4. **Storage**: the background owns the session record (`chrome.storage.session`, falling back to `local`); the page-`localStorage` channel no longer exists
+5. **Display**: the in-page widget (call mode) and the popup read from the background
 
 ### Dual Mode Operation
 
 | Mode | When | How |
 |------|------|-----|
-| **Meet Mode** | On Google Meet tab | Injects into page, reads existing video element |
-| **Standalone Mode** | Not on Meet | Uses offscreen document with own camera access |
+| **Meet / Zoom / Teams mode** | On a supported call tab | Injects the analyser into the page and analyses the self-view `<video>` (live local-capture track, else mirrored element, else largest) |
+| **Standalone Mode** | Any other tab | Uses an offscreen document with its own camera access |
 
 ---
 
 ## Performance Considerations
 
-- **Frame Rate**: legacy web loop is rAF-bound (prediction recorded at 1 Hz); the extension throttles to ~5 FPS; DACE mode uses a fixed 200 ms tick (design target, not measured)
+- **Frame Rate**: web app (legacy and DACE) and extension all tick every 200 ms (5 FPS design rate, not measured) and record a prediction once per second
 - **Detection Model**: TinyFaceDetector (320px input, ~150ms inference)
 - **Memory**: ~50MB for face-api models
 - **CPU Usage**: ~15-25% on modern hardware
@@ -276,7 +273,7 @@ With **α = 0.15** (web app; the extension uses 0.35), the system responds to ch
 1. **Lighting**: Poor lighting reduces landmark accuracy
 2. **Angle**: Extreme head angles (>40°) lose tracking
 3. **Glasses**: Reflective glasses may affect gaze estimation
-4. **Multiple Faces**: the web app tracks one primary face chosen by `PrimaryFaceSelector` (largest/most centered, with hysteresis); the extension uses the largest face
+4. **Multiple Faces**: the web app tracks one primary face chosen by `PrimaryFaceSelector` (largest/most centered, with hysteresis); the extension uses the same `PrimaryFaceSelector` hysteresis (ported)
 5. **Camera Quality**: Low-res cameras reduce accuracy
 
 ---

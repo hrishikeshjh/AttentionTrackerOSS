@@ -1,6 +1,6 @@
 # CognEn v1.0 — Cognitive Engagement Analyzer (Browser)
 
-> Root-level copy of [`v1.0/README.md`](v1.0/README.md), kept identical in content; paths such as `src/...` and `scripts/...` are relative to `v1.0/`.
+> Root-level copy of [`v1.0/README.md`](v1.0/README.md), kept identical in content; paths such as `src/...`, `scripts/...` and `tests/...` are relative to `v1.0/`. Edit `v1.0/README.md` and regenerate this copy.
 
 > **Single-student, webcam-based real-time attention monitoring**
 > For the multi-person CCTV server version, see **[v2.0 README](v2.0/README.md)**.
@@ -38,13 +38,13 @@
 
 ## 1. Overview
 
-CognEn v1.0 is a **browser-based** cognitive engagement analyzer built on Next.js 15. It captures a 640×480 webcam feed (the web-app analysis loop is `requestAnimationFrame`-bound and records a prediction once per second; "5 FPS" in the diagrams below is the design rate, and the optional DACE mode uses a fixed 200 ms tick), runs face detection via **face-api.js TinyFaceDetector**, extracts 68 facial landmarks, and computes a real-time **attention score (0–100)** using a weighted multi-feature ML engine with EMA temporal smoothing.
+CognEn v1.0 is a **browser-based** cognitive engagement analyzer built on Next.js 15. It captures a 640×480 webcam feed (both web-app pipelines, legacy and the optional DACE mode, analyse on a fixed 200 ms `FixedTickScheduler` tick, i.e. a 5 FPS design rate, and record a prediction once per second; the 5 FPS rate is a design value, not a measured one: nothing has been run in a browser or against a camera), runs face detection via **face-api.js TinyFaceDetector**, extracts 68 facial landmarks, and computes a real-time **attention score (0–100)** using a weighted multi-feature ML engine with EMA temporal smoothing.
 
 The upgraded v1.0 adds **context-aware scoring**: YOLOv8-nano object detection, MediaPipe hand tracking, and a 15-frame sliding-window temporal classifier distinguish reading a book (attentive) from using a phone (distracted) — eliminating the uniform downward-gaze penalty of the original system.
 
 ```mermaid
 flowchart LR
-    A["Webcam<br/>640×480 @ 5 FPS"] --> B["face-api.js<br/>TinyFaceDetector"]
+    A["Webcam<br/>640×480 · 200 ms ticks"] --> B["face-api.js<br/>TinyFaceDetector"]
     B --> C["68-pt Landmarks"]
     C --> D["FaceMetricsAggregator<br/>EAR · MAR · Gaze<br/>Head Pose · Blink<br/>Fatigue · PERCLOS"]
 
@@ -59,7 +59,7 @@ flowchart LR
     J --> K["Context-Gate<br/>Override"]
     K --> L["MLEngine<br/>Context-Aware Scoring<br/>EMA α=0.15"]
     L --> M["Attention Score 0–100<br/>Behavior Label"]
-    M --> N["Dashboard<br/>+ Firebase + PDF"]
+    M --> N["Dashboard<br/>+ PDF report"]
 ```
 
 ---
@@ -89,7 +89,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     subgraph Input["Input Layer"]
-        WC["Webcam 640×480<br/>@ 5 FPS"]
+        WC["Webcam 640×480<br/>200 ms ticks"]
     end
 
     subgraph Perception["Perception Layer"]
@@ -112,7 +112,6 @@ flowchart TD
 
     subgraph Output["Output Layer"]
         DASH["Dashboard<br/>Charts · Summary"]
-        FB["Firebase<br/>Firestore"]
         PDF["Genkit + Gemini<br/>PDF Report"]
     end
 
@@ -121,7 +120,7 @@ flowchart TD
     WC --> HT
     OD & HT --> HOP
     FMA & HOP --> TC --> CG --> ML
-    ML --> DASH & FB & PDF
+    ML --> DASH & PDF
 ```
 
 ### 3.2 Sequence Diagram — Single Frame Processing
@@ -171,6 +170,8 @@ The MLEngine automatically selects its scoring mode:
 |------|-----------|----------|---------|
 | **LEGACY** | `detectedObjects === undefined` | 13 features incl. uniform `pitchDeviation` | `FEATURE_WEIGHTS_LEGACY` |
 | **UPGRADED** | `detectedObjects !== undefined` | 16 features: replaces `pitchDeviation` with `contextAwarePitch`, `objectContext`, `handObjectProximity`, `temporalPattern` | `FEATURE_WEIGHTS_V1_UPGRADED` |
+
+Both paths are reachable in the web app: `webcam-panel.tsx` keeps the object detector only if the YOLO model actually loaded (`od.isLoaded()`), so a missing `/models/yolov8n-objects.onnx` yields the LEGACY weights. The web app builds its engine with `APP_ENGINE_OPTIONS` (`cmcvTaxonomy: 'v2'`, `contributionWeights: 'used'`), which only changes explanatory outputs (feature contributions, CMCV category), never `rawScore`, state or confidence; a bare `new MLEngine()` keeps the frozen as-shipped behaviour that `legacy-equivalence.test.ts` and replay presets A/A' use. When no face is present for `ABSENCE_GRACE_MS` (3 s), `MLEngine.predictAbsent()` records an `Idle` tick scored 0 through the EMA, so absence lowers the session average.
 
 ### 4.2 Upgraded Feature Weights
 
@@ -442,26 +443,29 @@ Uses **linear regression** for trend detection, sliding windows for period ident
 
 ## 11. Chrome Extension
 
-**Manifest V3** extension with dual-mode operation:
+**Manifest V3** extension with dual-mode operation. Full details (permissions, messaging channel, video selection, settings): [`extension/README.md`](v1.0/extension/README.md).
 
 ```mermaid
 flowchart LR
     POP["popup.js<br/>(UI)"] --> BG["background.js<br/>(Service Worker)"]
-    BG --> CT["content.js<br/>(Meet Inject)"]
-    CT --> OS["offscreen.js<br/>(Standalone)"]
-    OS --> MLC["ml-core.js<br/>(ML Engine)"]
+    BG --> OS["offscreen.js<br/>(Standalone: webcam + loop)"]
+    BG -->|"executeScript (MAIN)"| CT["content.js<br/>(Meet/Zoom/Teams)"]
+    CT -->|"signed postMessage"| BR["bridge.js<br/>(ISOLATED)"]
+    BR -->|"chrome.runtime"| BG
+    OS --> MLC["lib/ml-core.js"]
+    CT --> MLC
 ```
 
 | Mode | When | How |
 |------|------|-----|
-| **Meet Mode** | On Google Meet tab | Injects into page, reads existing video element |
-| **Standalone** | Not on Meet | Uses offscreen document with own camera access |
+| **Meet / Zoom / Teams mode** | On a supported call tab | Background injects `face-api`, `ml-core.js` and `content.js` into the page MAIN world and `bridge.js` into the isolated world; the analyser picks the self-view `<video>` (live local-capture track, else mirrored element, else largest) |
+| **Standalone** | Any other tab | Offscreen document with its own `getUserMedia` camera access |
 
-**Score Interpretation**: 70–100 (Green/Attentive) · 40–69 (Orange/Distracted) · 0–39 (Red/Multitasking)
+**Parity with the web app.** `extension/lib/ml-core.js` (an IIFE exposing `window.__cognen`) is a plain-JS port of `src/lib/scoring/` and the legacy `MLEngine` path: same blink/fatigue/fidget constants, EMA α = 0.15, predictions once per second, thresholds 70/40 (popup ring, badge, widget and README all use the same bands). It has no object detector or hand tracker, so both modes score with `FEATURE_WEIGHTS_LEGACY`. `src/lib/__tests__/extension-equivalence.test.ts` loads `ml-core.js` in node and compares it with the TypeScript modules on synthetic landmark sequences. This is a unit test only: **the extension has not been loaded in Chrome or run against a camera.** The legacy pitch defect (§24) applies here too.
 
-**Permissions (updated)**: `host_permissions` is scoped to `meet.google.com`, `*.zoom.us`, and `teams.microsoft.com` only — a previously-present `<all_urls>` entry was removed since it granted unnecessary access beyond the extension's actual use case. Ad-hoc standalone-tab access (when the user clicks the extension icon on a non-Meet/Zoom/Teams page) is covered by the already-declared `activeTab` permission, which grants temporary access to the active tab only on explicit user interaction.
+**Cadence.** Frames are analysed on a fixed 200 ms `setTimeout` tick (not `requestAnimationFrame`, which is paused in hidden/offscreen documents); one prediction per second goes to the background, which owns the badge, the session record (`chrome.storage.session`, with `local` as fallback), alerts (`chrome.alarms` + `notifications`; default alert threshold 40, break reminder 45 min).
 
-**Performance (updated)**: `offscreen.js`'s face-detection loop previously ran unthrottled on every `requestAnimationFrame` (~60fps) even though only 5fps of data is ever consumed downstream — now timestamp-gated to a 200ms (5fps) budget, cutting CPU usage roughly 10× during active sessions. Storage writes are fire-and-forget (no longer `await`-blocking the detection loop) and only fire on a meaningful score change (±2) or a 500ms cap. Standalone-mode badge updates now use a reactive `chrome.storage.onChanged` listener instead of a polling timer.
+**Security.** `host_permissions` and `web_accessible_resources` are limited to `meet.google.com`, `*.zoom.us` and `teams.microsoft.com`. The in-page analyser shares the page's MAIN world, so its messages are HMAC-signed with a per-session key delivered via `executeScript` args, verified and replay-checked in `bridge.js`, then relayed with `chrome.runtime.sendMessage`; the page-`localStorage` channel is gone. Page scripts can still read the posted messages and tamper with injected globals (see `extension/README.md`).
 
 ---
 
@@ -475,7 +479,7 @@ flowchart LR
 | Object detection | YOLOv8-nano ONNX via `onnxruntime-web` (WebGPU → WASM) |
 | Hand tracking | MediaPipe Hands Lite (`@mediapipe/hands`) |
 | Temporal classifier | Rule-based + ONNX 1D-CNN |
-| Auth / Storage | Firebase Auth + Firestore |
+| Auth | Firebase Auth (Firestore is initialised in `firebase.ts` but nothing is read or written) |
 | AI report | Google Genkit + Gemini (PDF generation) |
 | Charts | Recharts |
 | UI components | Radix UI + Tailwind CSS |
@@ -523,28 +527,33 @@ v1.0/
 │   │   ├── error.tsx              # Client error boundary (see §22)
 │   │   ├── global-error.tsx       # Root-layout error boundary
 │   │   └── globals.css            # Global styles
-│   ├── ai/flows/                  # Genkit flows (session summary, PDF report)
+│   ├── ai/flows/                  # Genkit flow (generate-session-summary.ts; the unused analyze-facial-features flow was removed)
+│   ├── lib/server/                # Report-action security: firebase-id-token.ts (ID-token verify), rate-limit.ts, report-input.ts (zod), report-request.ts
 │   └── hooks/                     # React hooks
 ├── extension/
-│   ├── lib/ml-core.js             # JS port: MLEngineV2, TemporalBehaviorClassifier
-│   │                               #   (hand-copied formulas that diverge from scoring/ — see §20)
-│   ├── offscreen.js               # Offscreen document: webcam + face-api.js (throttled, see §22)
-│   ├── background.js              # Service worker
-│   ├── content.js                 # Injects attention widget into Meet/Zoom/Teams
+│   ├── lib/ml-core.js             # IIFE port of scoring/ + legacy MLEngine (equivalence-tested, see §11)
+│   ├── lib/face-api.min.js        # bundled @vladmandic/face-api (weights from jsDelivr CDN)
+│   ├── offscreen.js               # Offscreen document: webcam + face-api.js (200 ms setTimeout tick)
+│   ├── background.js              # Service worker: session record, badge, alarms, notifications
+│   ├── content.js                 # MAIN-world analyser + widget for Meet/Zoom/Teams
+│   ├── bridge.js                  # ISOLATED-world relay (verifies HMAC, forwards to background)
+│   ├── popup/                     # Popup UI
 │   └── manifest.json              # Chrome MV3 manifest (host_permissions narrowed, see §23)
 ├── public/
 │   ├── models/                    # face-api.js weights
 │   └── onnx/                      # onnxruntime-web WASM binaries
 ├── scripts/
+│   ├── patch-genkit-otel2.mjs     # postinstall: adapts genkit to the OpenTelemetry 2.x forced by overrides (§23)
+│   ├── stubs/extract-zip/         # local stub that replaces the extract-zip dependency (§23)
 │   ├── setup-models.sh            # Copies ORT WASM; downloads + sha256-verifies MediaPipe models
 │   ├── models.sha256              # Checksums verified by setup-models.sh
 │   └── dace/                      # replay-features.ts, metrics.ts, cvat-windows.ts (DACE evaluation tooling)
 ├── eslint.config.mjs              # ESLint flat config (next/core-web-vitals + typescript-eslint)
 ├── vitest.config.ts               # Vitest test runner config
-├── (.env.example is referenced in §15 but does not exist in the repo)
+├── .env.example                   # placeholder environment template (§15)
 ├── package.json
 ├── next.config.ts
-├── tailwind.config.ts
+├── postcss.config.mjs             # Tailwind 4 via @tailwindcss/postcss (no tailwind.config.ts)
 └── tsconfig.json
 ```
 
@@ -553,8 +562,8 @@ v1.0/
 ## 14. Setup & Installation
 
 ### Prerequisites
-- Node.js ≥ 20
-- Firebase project (Auth + Firestore)
+- Node.js 24 (what CI and the local verification use; `package.json` declares no `engines` field)
+- Firebase project (Auth; Firestore is initialised but unused)
 - Google AI API key (Genkit / Gemini)
 
 ### Steps
@@ -651,6 +660,10 @@ GEMINI_API_KEY=...
 >
 > `GEMINI_API_KEY` (or `GOOGLE_API_KEY`, either name works) **is** secret — used by `src/ai/genkit.ts`'s `googleAI()` plugin for Gemini access. Get one from [Google AI Studio](https://aistudio.google.com/apikey). Never commit a real value.
 >
+> `FIREBASE_PROJECT_ID` (optional, server only) is the project whose ID tokens the report server action accepts; it defaults to `NEXT_PUBLIC_FIREBASE_PROJECT_ID`.
+>
+> **Authentication model.** The dashboard's sign-in guard (`src/app/dashboard/layout.tsx`) runs in the browser: Firebase client auth lives in the browser, so Next.js middleware cannot see it without a session cookie, and the guard only controls what UI is shown. The one server-side resource, the report export (`generateReportAction` in `src/app/actions.ts`), authenticates every call itself: the client sends its Firebase ID token, which is verified against Google's public signing keys (`src/lib/server/firebase-id-token.ts`, `node:crypto`, no extra dependency), then the call is rate-limited per user (5 per 10 min per server instance) and its input strictly validated before Gemini is called.
+>
 > Deployed via Firebase App Hosting: see `apphosting.yaml`, which declares the public Firebase vars directly and documents referencing `GEMINI_API_KEY` via `firebase apphosting:secrets:set` rather than plaintext.
 
 **DACE variables (all optional; DACE is off when none are set).** Read by `src/lib/dace/config.ts`. `PRESET` is applied first, then the individual flags override it. Invalid values are ignored with a warning.
@@ -680,7 +693,7 @@ See [ARCHITECTURE.md §11](ARCHITECTURE.md#11-dace-downward-attention-context-en
 
 | Metric | Value |
 |--------|-------|
-| Frame rate | Legacy loop: `requestAnimationFrame`-bound, prediction recorded at 1 Hz (5 FPS is the design rate, not a measured value). DACE mode: fixed 200 ms tick |
+| Frame rate | Both pipelines: fixed 200 ms `FixedTickScheduler` tick (5 FPS design rate; a tick that arrives while the previous one is running is dropped, never queued), prediction recorded at 1 Hz. Design values, not measured |
 | Face detection | TinyFaceDetector, 320px input, ~150ms |
 | Memory | ~50MB for face-api models |
 | CPU usage | ~15–25% on modern hardware |
@@ -704,7 +717,7 @@ See [ARCHITECTURE.md §11](ARCHITECTURE.md#11-dace-downward-attention-context-en
 2. **No raw video stored** — only derived scores persisted
 3. **Extension data** — stored locally in Chrome's storage
 4. **Firebase** — currently only Firebase Auth is used; no session data is written to Firestore
-5. **Report generation** — when you export a report, the session summary (derived scores and statistics, no frames) is sent to the Genkit/Gemini report generator
+5. **Report generation** — when you export a report, the session summary (derived scores and statistics, no frames) is sent to the Genkit/Gemini report generator; the request is only accepted with a valid Firebase ID token
 6. **DACE evaluation logs** (research builds only) — no images, no user id, random session id, manual download only; a data-retention limit is still to be implemented
 
 ---
@@ -744,9 +757,9 @@ Historically, the web app (`ml-engine.ts`/`face-geometry.ts`), the Chrome extens
 
 **Fix**: `v1.0/src/lib/scoring/` is now the single source of truth for all face-geometry math (EAR/MAR, head pose, gaze, blink/fatigue/stability trackers, feature scoring, multi-face selection). `face-geometry.ts` and `ml-engine.ts` are now thin re-export shims over it, so existing `@/lib/face-geometry` and `@/lib/ml-engine` imports keep working unchanged.
 
-**Extension sync**: the Chrome extension (plain JS, no TS build step for it yet) has a hand-copied version of the formulas (`extension/lib/ml-core.js`). It is **not** kept in sync: it diverges from `scoring/` (EMA α 0.35 vs 0.15, fidget ×10 vs ×5, different fatigue/blink constants, no scoring case for the context-aware features, different threshold bands). The extension is out of DACE scope. A generated-bundle build step (esbuild) that would make this automatic is a scoped future improvement, not yet implemented.
+**Extension sync**: the Chrome extension (plain JS, no TS build step) carries a hand-written port of the formulas (`extension/lib/ml-core.js`). It was rewritten to match `scoring/` (EMA α 0.15, fidget ×5, same fatigue/blink constants, thresholds 70/40, same aggregator outputs) and `src/lib/__tests__/extension-equivalence.test.ts` guards the match on synthetic landmark sequences, so drift now fails `npm test`. It is still a copy, not generated code (an esbuild bundle step remains a possible improvement), it only implements the legacy weights, and it is out of DACE scope.
 
-**Cross-language sync with v2.0 Python**: no code-generation (too much machinery for stateful windowed classes like `BlinkDetector`/`HeadPoseTracker`) — instead, a documented equivalence contract: any change to a formula/threshold/weight in `scoring/` must (a) bump `scoring/VERSION.ts`'s `SCORING_CORE_VERSION`, and (b) be ported into `v2.0/features/face_metrics.py` in the same change. There is no `EQUIVALENCE.md` and no automated sync; the only automated cross-language checks are one-way: `shared/fixtures/encode13_cross_language.json` is generated from the TypeScript (`npx tsx ../shared/fixtures/gen_encode13_fixture.ts`, CI-guarded with `git diff --exit-code`) and read by `v2.0/tests/test_cross_language_contract.py`, and `v2.0/tests/test_pitch_characterisation.py` checks the Python pitch formula against the constants emitted by `scoring/__tests__/pitch-characterisation.test.ts`. DACE code is not ported to v2.0. Porting this fix already caught and corrected two real v2.0-side issues: v2.0's head-pose formula had the identical nose-chin-distance foreshortening bug, and **v2.0 never computed gaze at all** — `room_analyzer.py` hardcoded `gaze_x=None, gaze_y=None`, which the behavior classifier's feature extraction then silently defaulted to 0 ("looking dead center").
+**Cross-language sync with v2.0 Python**: no code-generation (too much machinery for stateful windowed classes like `BlinkDetector`/`HeadPoseTracker`) — instead, a documented equivalence contract: any change to a formula/threshold/weight in `scoring/` must (a) bump `scoring/VERSION.ts`'s `SCORING_CORE_VERSION`, and (b) be ported into `v2.0/features/face_metrics.py` in the same change. There is no `EQUIVALENCE.md` and no automatic sync; the cross-language checks are generated fixtures plus tests: `shared/fixtures/encode13_cross_language.json` (13-dim feature encoder) and `shared/fixtures/cmcv_cross_language.json` (contradiction detector) are generated from the TypeScript (`gen_encode13_fixture.ts`, `gen_cmcv_fixture.ts`, run with `npx tsx` from `v1.0/`) and read by `v2.0/tests/test_cross_language_contract.py` and `v2.0/tests/test_contradiction_detector.py`; `shared/fixtures/encode15_v2.json` is generated from the Python 15-dim encoder (`gen_encode15_fixture.py`); and `v2.0/tests/test_pitch_characterisation.py` checks the Python pitch formula against `docs/proposals/evidence/legacy_pitch_constants.json` emitted by `scoring/__tests__/pitch-characterisation.test.ts`. The `v1-test` CI job regenerates all of these and fails on any `git diff` or untracked output, so the fixtures cannot drift from the code. The contract test now shows the v1.0 and v2.0 13-dim encoders agree, apart from the documented proximity-code divergence (v1.0 rule layer: book 1.0 / pen 0.8 / desk 0.5 / phone 0.2; v2.0 and the ONNX input: 0.75 / 0.5 / 0.25 / 1.0). DACE code is not ported to v2.0. Porting this fix already caught and corrected two real v2.0-side issues: v2.0's head-pose formula had the identical nose-chin-distance foreshortening bug, and **v2.0 never computed gaze at all** — `room_analyzer.py` hardcoded `gaze_x=None, gaze_y=None`, which the behavior classifier's feature extraction then silently defaulted to 0 ("looking dead center").
 
 **Multi-face selection**: `scoring/face-selection.ts`'s `PrimaryFaceSelector` replaces the old `detections[0]` hardcoding. Scores candidate faces by `area×0.7 + centeredness×0.3`, with identity-continuity hysteresis — the current lock is kept unless it disappears for ≥10 consecutive frames, or a new candidate outscores it by >20% for several consecutive frames (avoiding flicker between two similarly-sized faces). v2.0 doesn't need this — ByteTrack already provides persistent per-person track IDs for its multi-person case.
 
@@ -771,11 +784,12 @@ The *sign pattern* of disagreement is classified into an actionable taxonomy:
 | Category | Signature | Meaning |
 |----------|-----------|---------|
 | `fatigue_masking` | gaze looks attentive, posture/eyelids say tired | Eyes forced open, body signals fatigue |
-| `prop_without_engagement` | book visible, hands not on it | Gaming-the-system detection (prop present, not actually used) |
+| `prop_without_engagement` | book visible, hands not holding/writing/on the desk, and the behaviour label is not `attentive_reading` | Gaming-the-system detection (prop present, not actually used). Corrected taxonomy `v2`: `hands_on_desk` and a reading label no longer trigger it |
 | `context_conflict` | gaze attentive, phone visible | Surfaces Context-Gate's territory as data, not just a clamp |
-| `coherent` | all modalities agree | Normal case — most frames |
+| `coherent` | smoothed index below `COHERENT_MAX` | Normal case — most frames |
+| `unclassified` | modalities disagree but match no named pattern | Added in taxonomy `v2`; the original taxonomy reported this case as `coherent` (a no-op final branch) |
 
-**Integration**: computed alongside `rawScore` in `MLEngine.predict()` but **never folded into it** — exposed as sibling fields `contradictionIndex`/`contradictionCategory` on `MLPrediction`, so downstream consumers (analytics, a future teacher dashboard) decide what to do with disagreement rather than having it silently averaged away. Ported (v1.0 legacy path only; no automated cross-language check) to `v2.0/inference/contradiction_detector.py`, called from `RoomAnalyzer._analyze_person()`, and cross-verified to produce matching categorizations on identical inputs.
+**Integration**: computed alongside `rawScore` in `MLEngine.predict()` but **never folded into it** — exposed as sibling fields `contradictionIndex`/`contradictionCategory` on `MLPrediction`, so downstream consumers (analytics, a future teacher dashboard) decide what to do with disagreement rather than having it silently averaged away. The web app's engine uses taxonomy `v2` (`APP_ENGINE_OPTIONS`); a bare `new MLEngine()` keeps the original `v1` rules because the legacy golden fixture freezes them. Ported to `v2.0/inference/contradiction_detector.py` (which implements the `v2` rules and now receives the behaviour label from `RoomAnalyzer`); the match is checked by `shared/fixtures/cmcv_cross_language.json`, generated from the TypeScript and drift-guarded in CI.
 
 **Validation status**: computationally free (reuses already-computed intermediates, zero new model inference) and unit-tested against constructed synthetic conflict cases (`src/lib/__tests__/contradiction-detector.test.ts`). Full empirical validation (precision/recall against human-annotated ambiguity) requires labeled data that doesn't yet exist — DAiSEE/EngageNet don't have modality-conflict annotations. Until that validation lands, the scalar `contradictionIndex` (should correlate with classifier error rate) is the more defensible signal than the categorical taxonomy, which is a hypothesis pending real-data validation.
 
@@ -783,26 +797,28 @@ The *sign pattern* of disagreement is classified into an actionable taxonomy:
 
 ## 22. Testing, Linting & CI
 
-- **Unit tests**: Vitest (`npm run test` / `npm run test:watch`), covering the scoring core (EAR/MAR boundary conditions, head-pose distance-invariance regression test, gaze symmetry, EMA convergence, fidget-score pre-smoothing regression, `PrimaryFaceSelector` hysteresis) and the Cross-Modal Contradiction Vector. Runs with `vitest.config.ts` (Node environment, no DOM needed for pure-math tests).
+- **Unit tests**: Vitest (`npm run test` / `npm run test:watch`): **326 tests in 33 files, all passing** at the time of writing. Coverage: the scoring core (EAR/MAR, head pose, gaze, EMA, trackers, `PrimaryFaceSelector`), the legacy-equivalence golden fixture, the extension-equivalence test, the Cross-Modal Contradiction Vector, the temporal classifier, analytics, letterboxed object-detector post-processing, the legacy frame/absence logic, the DACE suites, the report-action security helpers (`src/lib/server/__tests__`) and the replay options. All of it runs in node with browser libraries mocked: **no test has run in a real browser, against a camera, or inside Chrome**. Runs with `vitest.config.ts` (Node environment, no DOM needed for pure-math tests).
 - **Type checking**: `npm run typecheck` (`tsc --noEmit`, `strict: true`).
 - **Linting**: `npm run lint` (`eslint.config.mjs` — Next.js flat config, `next/core-web-vitals` + `next/typescript`). Previously no ESLint config existed at all; `next.config.ts` also previously set `typescript.ignoreBuildErrors: true` and `eslint.ignoreDuringBuilds: true`, silently letting type/lint errors ship to production — both flags have been removed, so `npm run build` now genuinely enforces both.
 - **Error boundaries**: `src/app/error.tsx` (client-side render errors) and `src/app/global-error.tsx` (root-layout failures) — previously an unhandled render error crashed the whole app with no fallback UI.
-- **CI**: `.github/workflows/ci.yml` runs `typecheck`, `lint`, `test` (Vitest 257 tests, plus the DACE fixture/evidence guards, see §24), `build`, and an informational `npm audit --audit-level=high` on every push/PR to `main`, path-filtered so a v2.0-only change doesn't trigger v1.0 jobs. See [README.md §CI](README.md) for the full pipeline description shared with v2.0.
+- **CI**: `.github/workflows/ci.yml` runs `v1-typecheck`, `v1-lint`, `v1-test` (Vitest plus the generated-fixture drift guards, see §20 and §24), `v1-build` (with the CI environment) and `v1-audit` (`npm audit --audit-level=low`, so **any** advisory fails the job) on push and PR to `main` and `dev`, path-filtered so a v2.0-only change doesn't trigger v1.0 jobs; `workflow_dispatch` runs everything. A manual run on `dev` had all 12 jobs green. See [README.md §CI](README.md) for the pipeline shared with v2.0.
 
 ---
 
 ## 23. Security & Dependency Hygiene
 
-- **Dependency vulnerabilities**: a cleanup pass took `npm audit` from 107 vulnerabilities (6 critical, 22 high) to 35 (0 critical, 0 high) via `npm audit fix`, targeted version bumps (`next`, `jspdf`, `vitest`), and `package.json` `overrides` for `node-fetch` (patch bump) and the `@opentelemetry/*` chain pulled in transitively by `genkit` (verified genkit still initializes correctly at runtime despite the version jump — see commit history for the verification method). The redundant `yarn.lock` (checked in alongside `package-lock.json`, causing GitHub to scan both and roughly double-count the same underlying issues) was removed — npm is the only package manager actually used.
+- **Dependency vulnerabilities**: `npm audit` reports **0 vulnerabilities** (it was 107, with 6 critical and 22 high, before the clean-up rounds). How: `next` 15.5.x, `genkit` 1.42, `firebase` 11.10 and other bumps; the Tailwind 3 to 4 migration (`@tailwindcss/postcss`, no `tailwind.config.ts`) which dropped the vulnerable `braces` chain; `extract-zip` replaced by a local stub package (`scripts/stubs/extract-zip`, `file:` dependency plus an override) because it pulled vulnerable transitive packages (the stub must be kept in mind if anything ever needs real zip extraction); the OpenTelemetry packages forced to 2.x through `overrides`, with `scripts/patch-genkit-otel2.mjs` (run by `postinstall`) adapting genkit to them; and a longer `overrides` list in `package.json`. Explicit `@emnapi/core` and `@emnapi/runtime` devDependencies keep `package-lock.json` complete for Linux so `npm ci` succeeds on CI. The redundant `yarn.lock` was removed (npm is the only package manager). Genkit's runtime behaviour after the OTel jump has not been verified by an actual Gemini call (only unit tests and a CI-environment build).
 - **Extension permissions**: narrowed as described in §11 — `<all_urls>` removed from `host_permissions`.
 - **Firebase config**: moved from hardcoded values to env vars (§15) — not a secret-leak fix (Firebase Web SDK keys are meant to be public), but closes a real inconsistency where `next.config.ts` declared env vars that nothing populated.
-- **CI audit**: `npm audit --audit-level=high` runs on every push/PR as an **informational** job (`continue-on-error`), since advisories appear daily and remaining findings are transitive with no upstream fix; it no longer blocks merges.
+- **Report action**: `generateReportAction` requires a Firebase ID token (verified server-side), is rate-limited per user and validates its input with zod before any Gemini call (see §15). It was previously unauthenticated.
+- **`.env.example`** exists with placeholders; the real `.env` is gitignored and untracked. The gitleaks config allowlists only the public Firebase web key, model checksums and fake test keys.
+- **CI audit**: `v1-audit` runs `npm audit --audit-level=low` and **blocks**: any advisory of any severity fails the job and `all-checks-passed`. New advisories will turn it red without a code change; fix them with `npm audit fix`, a bump or an override rather than lowering the gate. Dependabot (`.github/dependabot.yml`) opens weekly grouped PRs against `dev`.
 
 ---
 
 ## 24. DACE (Downward-Attention Context Engine) — details
 
-Design and parameters: [ARCHITECTURE.md §11](ARCHITECTURE.md#11-dace-downward-attention-context-engine-v10-only). Commands and env vars: §14 and §15. Status: implemented and unit-tested (Vitest: 257 tests, browser libraries mocked); **nothing has been run in a browser or against a camera**, and every accuracy, latency (p95 ≤ 200 ms) and FDR-DA figure is a **target** until measured on pilot set P1 / dataset D1. DACE is v1.0 web app only: the Chrome extension and v2.0 keep the legacy formulas.
+Design and parameters: [ARCHITECTURE.md §11](ARCHITECTURE.md#11-dace-downward-attention-context-engine-v10-only). Commands and env vars: §14 and §15. Status: implemented and unit-tested (Vitest: 326 tests across the whole app, browser libraries mocked); **nothing has been run in a browser or against a camera**, and every accuracy, latency (p95 ≤ 200 ms) and FDR-DA figure is a **target** until measured on pilot set P1 / dataset D1. DACE is v1.0 web app only: the Chrome extension keeps the legacy formulas; v2.0 has its own, separately ported measurement (pitch from the MediaPipe transformation matrix with a per-track reference, blendshape gaze) but no abstention or "Unsure".
 
 **Flags** (`src/lib/dace/config.ts`): `dace.enabled`, `measurement` (`legacy|pnp68|mediapipe`), `evidence`, `rules`, `abstain` (`off|rules|conformal`), `detector` (`yolo|mediapipe`), `kinematics`, `temporalModel`, `baseline`, `log` (`off|windows|frames`), `replay.shuffleObjects`. Replay presets: **A** (DACE off, no model), **A'** (off, model present), **A''** (`pnp68`), **B** (`mediapipe`), **C** (B + evidence), **F** (C + rules + abstain), **H** (F + shuffled objects, negative control), **I** (F on desk-out-of-frame segments).
 
@@ -814,4 +830,4 @@ Design and parameters: [ARCHITECTURE.md §11](ARCHITECTURE.md#11-dace-downward-a
 
 **Models and licences.** `scripts/setup-models.sh` downloads pinned MediaPipe `face_landmarker.task`, `hand_landmarker.task`, `efficientdet_lite0.tflite` (Apache-2.0), copies the tasks-vision WASM, and verifies `scripts/models.sha256`. The YOLOv8n object model is **AGPL-3.0** (decision R2: research use only, pending approval) and is not downloaded by the script; the MediaPipe EfficientDet detector is the Apache-2.0 comparison (`detector=mediapipe`).
 
-**CI** (`.github/workflows/ci.yml`): top-level `permissions: contents: read, pull-requests: read`; `v1-test` runs `npx vitest run`, regenerates `shared/fixtures/encode13_cross_language.json`, fails if `shared/` or `docs/proposals/evidence/` changed (`git diff --exit-code`), and runs `pitch_sim.py` (numpy); `v1-audit` and `v2-audit` are informational (`continue-on-error`). The workflow has not been re-run on GitHub since these changes.
+**CI** (`.github/workflows/ci.yml`): `v1-test` runs `npx vitest run`, regenerates `shared/fixtures/encode13_cross_language.json` and `cmcv_cross_language.json` (TypeScript generators via `tsx`), `shared/fixtures/encode15_v2.json` (Python generator, numpy only) and runs `docs/proposals/evidence/pitch_sim.py`; it then fails on any `git diff` or untracked file under `shared/` or `docs/proposals/evidence/`. `v1-audit` blocks on any advisory (see §23). The workflow ran green on `dev` (manual `workflow_dispatch`, all 12 jobs).
