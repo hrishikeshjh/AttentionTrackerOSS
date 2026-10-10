@@ -713,7 +713,7 @@ If the goal is one real, defensible published contribution as fast as possible: 
 | `v1-test` | `npx vitest run`, then regenerates `shared/fixtures/encode13_cross_language.json`, `cmcv_cross_language.json` (TypeScript), `encode15_v2.json` (Python) and runs `docs/proposals/evidence/pitch_sim.py`; fails on any `git diff` or untracked file under `shared/` or `docs/proposals/evidence/` |
 | `v1-audit` | `npm audit --audit-level=low`: **blocks on any advisory** |
 | `v2-lint` | `ruff check` |
-| `v2-typecheck` | `mypy .` (informational, `continue-on-error`) |
+| `v2-typecheck` | `mypy .` (clean, blocking) |
 | `v2-test` | Light pytest tier (numpy/pytest/scikit-learn/onnxruntime) installed with the production pins as constraints; torch/opencv/ultralytics tests are excluded and run locally |
 | `v2-audit` | `pip-audit` **resolves** `server/requirements.txt` (full ML stack) and blocks; `V2_AUDIT_RESOLVE` switches to a pins-only informational fallback if the pins ever stop resolving together |
 | `secret-scan` | gitleaks (config `.github/gitleaks.toml` allowlists the public Firebase web key, model checksums and fake test keys; needs `pull-requests: read`) |

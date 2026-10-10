@@ -40,7 +40,7 @@ logger = logging.getLogger("cognen.export_onnx")
 
 def export_onnx(
     checkpoint_path: str,
-    output_path: str,
+    output_path: str | Path,
     device: str = "cpu",
     opset: int = 17,
     verify_parity: bool = True,
@@ -63,8 +63,8 @@ def export_onnx(
 
     from training.model import FEATURE_DIM, WINDOW_SIZE, BehaviorClassifierCNN
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     model = BehaviorClassifierCNN.load(checkpoint_path, device=device)
     model.eval()
@@ -77,8 +77,8 @@ def export_onnx(
 
     torch.onnx.export(
         model,
-        dummy,
-        str(output_path),
+        (dummy,),   # positional-args tuple (a bare tensor is wrapped the same way)
+        str(out_path),
         input_names=["input"],
         output_names=["logits"],
         dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
@@ -90,7 +90,7 @@ def export_onnx(
         dynamo=False,
     )
 
-    logger.info("Exported ONNX model → %s", output_path)
+    logger.info("Exported ONNX model → %s", out_path)
 
     # Structural check: a failure is an error now (it used to be logged and
     # the broken file kept).
@@ -99,7 +99,7 @@ def export_onnx(
     except ImportError:
         logger.warning("onnx package not installed; skipping the structural model check.")
     else:
-        onnx.checker.check_model(onnx.load(str(output_path)))
+        onnx.checker.check_model(onnx.load(str(out_path)))
         logger.info("ONNX model check passed.")
 
     # Numerical parity: the ONNX graph must reproduce the PyTorch logits.
@@ -109,10 +109,10 @@ def export_onnx(
         except ImportError:
             logger.warning("onnxruntime not installed; skipping the ONNX/PyTorch parity check.")
         else:
-            diff = check_onnx_parity(model, output_path, device=device)
+            diff = check_onnx_parity(model, out_path, device=device)
             logger.info("ONNX/PyTorch parity: max |Δlogit| = %.2e", diff)
 
-    return output_path
+    return out_path
 
 
 class OnnxParityError(AssertionError):

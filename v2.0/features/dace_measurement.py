@@ -276,7 +276,8 @@ def _robust_scale(res: np.ndarray) -> float:
     return max(1.4826 * mad, 1e-9)
 
 
-def huber_fit_quadratic(gs: Sequence[float], es: Sequence[float], delta: float = HUBER_DELTA,
+def huber_fit_quadratic(gs: Sequence[float] | np.ndarray, es: Sequence[float] | np.ndarray,
+                        delta: float = HUBER_DELTA,
                         max_iter: int = 100) -> tuple[float, float, float] | None:
     """Huber IRLS fit of e = b0 + b1 g + b2 g². None if singular / < 3 samples."""
     g = np.asarray(gs, dtype=np.float64)
@@ -567,6 +568,10 @@ class DaceTrackMeasurer:
         lm = obs.landmarks68
         # Head pose: matrix (preferred) or the clearly-labelled legacy 68-point fallback.
         euler = euler_from_matrix(obs.matrix) if obs.matrix is not None else None
+        pitch: float | None
+        yaw: float | None
+        roll: float | None
+        pitch_source: str | None
         if euler is not None:
             pitch, yaw, roll = euler
             pitch_source = "matrix"

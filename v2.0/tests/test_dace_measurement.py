@@ -40,14 +40,18 @@ from perception.face_landmarks import Point2D  # noqa: E402
 
 @pytest.mark.parametrize("pyr", [(0, 0, 0), (20, 0, 0), (-15, 10, 5), (35, -25, -10), (5, 40, 20)])
 def test_euler_round_trip(pyr):
-    got = euler_from_matrix(matrix_from_euler(*pyr, scale=3.7))   # uniform scale is removed
+    pitch, yaw, roll = pyr
+    got = euler_from_matrix(matrix_from_euler(pitch, yaw, roll, scale=3.7))   # uniform scale is removed
+    assert got is not None
     np.testing.assert_allclose(got, pyr, atol=1e-6)
 
 
 def test_column_major_flat_equals_matrix():
     m = matrix_from_euler(25, -10, 4, t=(1, 2, -60))
     flat_col_major = m.T.reshape(-1)   # JavaScript .data layout
-    np.testing.assert_allclose(euler_from_matrix(flat_col_major), euler_from_matrix(m), atol=1e-9)
+    from_flat, from_matrix = euler_from_matrix(flat_col_major), euler_from_matrix(m)
+    assert from_flat is not None and from_matrix is not None
+    np.testing.assert_allclose(from_flat, from_matrix, atol=1e-9)
 
 
 def test_positive_pitch_is_head_down():
@@ -56,7 +60,8 @@ def test_positive_pitch_is_head_down():
     r = rotation_from_euler(30, 0, 0)
     normal = r @ np.array([0, 0, 1.0])
     assert normal[1] < 0
-    assert euler_from_matrix(matrix_from_euler(30, 0, 0))[0] == pytest.approx(30)
+    euler = euler_from_matrix(matrix_from_euler(30, 0, 0))
+    assert euler is not None and euler[0] == pytest.approx(30)
 
 
 def test_degenerate_matrix_is_none():
@@ -96,7 +101,9 @@ def _mesh(iris_dy=0.0):
 
 
 def test_blendshape_gaze_sign():
-    v, h = gaze_from_blendshapes(_bs(down=0.7, up=0.05))
+    gaze = gaze_from_blendshapes(_bs(down=0.7, up=0.05))
+    assert gaze is not None
+    v, h = gaze
     assert v == pytest.approx(0.65)
     assert gaze_from_blendshapes({"eyeLookDownLeft": 0.5}) is None
 
@@ -123,7 +130,9 @@ def test_huber_fit_recovers_quadratic_with_outliers():
     g = rng.uniform(-0.2, 0.9, 300)
     e = 0.31 - 0.10 * g - 0.04 * g * g + rng.normal(0, 0.003, 300)
     e[:15] = 0.05   # blinks
-    b0, b1, b2 = huber_fit_quadratic(g, e)
+    fit = huber_fit_quadratic(g, e)
+    assert fit is not None
+    b0, b1, b2 = fit
     assert b0 == pytest.approx(0.31, abs=0.01) and b1 == pytest.approx(-0.10, abs=0.03)
 
 
@@ -207,6 +216,7 @@ def test_measurer_relative_pitch_and_feature_sign():
         out = m.update(t, FaceObservation(_lm68(), _mesh(), matrix_from_euler(8, 0, 0), _bs()))
         t += 200
     assert out.pitch_source == "matrix" and out.gaze_source == "blendshape"
+    assert out.pitch_feature is not None
     assert not out.calibrating and abs(out.pitch_feature) < 1e-6
     down = m.update(t, FaceObservation(_lm68(), _mesh(0.1), matrix_from_euler(33, 0, 0), _bs(down=0.7)))
     assert down.rel_pitch_down_deg == pytest.approx(25.0)
@@ -230,9 +240,10 @@ def test_reading_posture_does_not_raise_perclos():
     out = None
     for i in range(40):
         out = m.update(i * 200, FaceObservation(_lm68(), mesh, matrix_from_euler(30, 0, 0), _bs(down=0.7)))
+    assert out is not None
     assert out.ear_raw == pytest.approx(0.17, abs=1e-3)
     assert out.eye_closed is False and out.perclos == 0.0
-    assert out.ear_feature > 0.21
+    assert out.ear_feature is not None and out.ear_feature > 0.21
 
 
 def test_legacy_fallback_is_labelled():
@@ -248,4 +259,4 @@ def test_measurer_angles_are_degrees():
     m = DaceTrackMeasurer()
     out = m.update(0, FaceObservation(_lm68(), _mesh(), matrix_from_euler(0, 30, -12), _bs()))
     assert out.yaw_deg == pytest.approx(30) and out.roll_deg == pytest.approx(-12)
-    assert math.isfinite(out.ear_raw)
+    assert out.ear_raw is not None and math.isfinite(out.ear_raw)

@@ -16,6 +16,7 @@ import threading
 import types
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -188,7 +189,7 @@ def test_landmarks_returned_in_frame_coordinates():
 # ── face_detected / absent ────────────────────────────────────────────────────
 
 def _metrics(**kw):
-    base = dict(
+    base: dict[str, Any] = dict(
         ear=0.3, mar=0.3, pitch=0.0, yaw=0.0, roll=0.0, gaze_x=0.0, gaze_y=0.0,
         blink_detected=False, blink_rate=15.0, perclos=5.0, fatigue_index=10.0,
         fidget_score=5.0, head_pose_stability=90.0, face_distance=None, face_area=0.05,
@@ -294,7 +295,11 @@ def test_process_frame_runs_off_the_event_loop(monkeypatch):
     a = _analyzer([[Track(1, (100, 100, 300, 500), 0.9)]] * 3)
     seen = []
     real = a._process_frame
-    a._process_frame = lambda frame: (seen.append(threading.get_ident()), real(frame))[1]
+
+    def _spy(frame):
+        seen.append(threading.get_ident())
+        return real(frame)
+    monkeypatch.setattr(a, "_process_frame", _spy)
     src = _FakeSource(3)
 
     async def main():

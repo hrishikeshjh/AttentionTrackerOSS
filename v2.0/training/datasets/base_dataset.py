@@ -25,7 +25,7 @@ import abc
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Generator, Iterable, Iterator
+from typing import TYPE_CHECKING, Generator, Iterable, Iterator, Protocol
 
 import numpy as np
 
@@ -42,6 +42,11 @@ BEHAVIOR_CLASSES: list[str] = [
 ]
 
 CLASS_TO_IDX: dict[str, int] = {c: i for i, c in enumerate(BEHAVIOR_CLASSES)}
+
+
+class DropCounter(Protocol):
+    """Anything with a mutable ``dropped_absent_windows`` tally (a dataset)."""
+    dropped_absent_windows: int
 
 # Attention scores per class (matches temporal-classifier.ts BEHAVIOR_ATTENTION_SCORES)
 CLASS_ATTENTION_SCORES: dict[str, float] = {
@@ -145,7 +150,7 @@ class BaseBehaviorDataset(abc.ABC):
         group_id: object = None,
         no_face: list[bool] | None = None,
         max_no_face: int | None = None,
-        drop_counter: object = None,
+        drop_counter: DropCounter | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Slide a window over a per-frame feature sequence.

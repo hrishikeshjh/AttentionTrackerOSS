@@ -101,10 +101,11 @@ def test_canonical_geometry_matches_ibug_layout():
 def test_face_metrics_on_canonical_face_are_plausible():
     lm = _canon_68_image()
     ear = calculate_ear(lm)
-    assert 0.2 < ear < 0.4                     # open eyes
+    assert ear is not None and 0.2 < ear < 0.4                     # open eyes
     mar = calculate_mar(lm)
-    assert 0.2 < mar < 0.6                     # closed mouth, outer-lip MAR
+    assert mar is not None and 0.2 < mar < 0.6                     # closed mouth, outer-lip MAR
     yaw, _pitch, roll = calculate_head_pose(lm)
+    assert yaw is not None and roll is not None
     assert abs(yaw) < 1e-6 and abs(roll) < 1e-6   # frontal, symmetric
 
 
@@ -170,12 +171,12 @@ def _install_fake_mediapipe(monkeypatch, create=None):
     )
     python = types.SimpleNamespace(BaseOptions=lambda model_asset_path: ("base", model_asset_path))
     tasks = types.ModuleType("mediapipe.tasks")
-    tasks.python = python
+    setattr(tasks, "python", python)
     python_mod = types.ModuleType("mediapipe.tasks.python")
-    python_mod.vision = vision
-    python_mod.BaseOptions = python.BaseOptions
+    setattr(python_mod, "vision", vision)
+    setattr(python_mod, "BaseOptions", python.BaseOptions)
     mp = types.ModuleType("mediapipe")
-    mp.tasks = tasks
+    setattr(mp, "tasks", tasks)
     monkeypatch.setitem(sys.modules, "mediapipe", mp)
     monkeypatch.setitem(sys.modules, "mediapipe.tasks", tasks)
     monkeypatch.setitem(sys.modules, "mediapipe.tasks.python", python_mod)
@@ -226,10 +227,11 @@ def test_init_failure_is_loud_and_exposed(monkeypatch, tmp_path, caplog):
         det = fl.FaceLandmarksDetector(model_path=model)
     assert not det.available
     assert det.status == fl.STATUS_INIT_FAILED
-    assert "bad model bundle" in det.init_error
+    assert det.init_error is not None and "bad model bundle" in det.init_error
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert len(errors) == 1 and "bad model bundle" in errors[0].getMessage()
-    assert det.detect(object()) == []
+    import numpy as np
+    assert det.detect(np.zeros((4, 4, 3), np.uint8)) == []
 
 
 def test_mediapipe_missing_status(monkeypatch, caplog):

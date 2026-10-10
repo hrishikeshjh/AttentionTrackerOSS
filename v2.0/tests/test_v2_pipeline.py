@@ -17,6 +17,7 @@ Run: pytest v2.0/tests/test_v2_pipeline.py
 
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -40,7 +41,7 @@ def _track(tid, x1, y1, x2, y2, conf=0.9):
     return Track(track_id=tid, bbox_xyxy=(x1, y1, x2, y2), confidence=conf)
 
 def _metrics(**kw):
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         ear=0.30, mar=0.02, pitch=0.0, yaw=0.0, roll=0.0,
         gaze_x=0.0, gaze_y=0.0,
         blink_detected=False, blink_rate=15.0, perclos=5.0,
@@ -188,7 +189,7 @@ class TestRoomSnapshot:
         r1 = clf1.update(_frame(_metrics(gaze_x=0.05, pitch=-3.0)))
         r2 = clf2.update(_frame(_metrics(ear=0.18, perclos=28.0)))
 
-        persons = [
+        persons: list[dict[str, Any]] = [
             {"track_id": 1, "seat_id": "seat_1",
              "behavior": r1.label, "attention_score": r1.attention_score,
              "confidence": round(r1.confidence, 2)},

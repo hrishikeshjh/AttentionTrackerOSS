@@ -110,6 +110,13 @@ class _FakeCap:
         pass
 
 
+def _cap_of(src: fs.FrameSource) -> _FakeCap | None:
+    """The (fake) capture a source opened; sources keep it in the private ``_cap``."""
+    cap = vars(src).get("_cap")
+    assert cap is None or isinstance(cap, _FakeCap)
+    return cap
+
+
 def _fake_cv2(cap_cls=_FakeCap):
     return types.SimpleNamespace(
         VideoCapture=cap_cls, CAP_FFMPEG=1900, CAP_PROP_BUFFERSIZE=38,
@@ -122,8 +129,10 @@ def test_ffmpeg_env_set_only_during_open_and_restored(monkeypatch):
     monkeypatch.setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "user;value")
     src = fs.RTSPSource("rtsp://h/x", transport="udp", connection_timeout_s=2)
     assert src.open()
-    assert src._cap.env_at_open == "rtsp_transport;udp"
-    assert src._cap.params == [53, 2000, 54, 2000]
+    cap = _cap_of(src)
+    assert cap is not None
+    assert cap.env_at_open == "rtsp_transport;udp"
+    assert cap.params == [53, 2000, 54, 2000]
     assert os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] == "user;value"
     monkeypatch.delenv("OPENCV_FFMPEG_CAPTURE_OPTIONS")
     fs.RTSPSource("rtsp://h/y", transport="tcp").open()
@@ -157,8 +166,8 @@ def test_request_stop_aborts_infinite_reconnect(monkeypatch):
 
     monkeypatch.setattr(fs, "cv2", _fake_cv2(_DeadCap))
     src = fs.RTSPSource("rtsp://h/x", max_reconnect_attempts=0, max_reconnect_delay_s=30)
-    src._cap = _DeadCap("rtsp://h/x")
-    result = {}
+    monkeypatch.setattr(src, "_cap", _DeadCap("rtsp://h/x"))
+    result: dict[str, object] = {}
     t = threading.Thread(target=lambda: result.setdefault("r", src.read()))
     t.start()
     threading.Event().wait(0.05)

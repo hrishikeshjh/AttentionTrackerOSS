@@ -66,15 +66,18 @@ import socket
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 from urllib.parse import urlparse, urlunparse
 
 import numpy as np
 
-try:  # cv2 is only needed to actually open sources; validation works without it
+if TYPE_CHECKING:
     import cv2
-except ImportError:  # pragma: no cover - exercised in the light CI tier
-    cv2 = None  # type: ignore[assignment]
+else:
+    try:  # cv2 is only needed to actually open sources; validation works without it
+        import cv2
+    except ImportError:  # pragma: no cover - exercised in the light CI tier
+        cv2 = None
 
 logger = logging.getLogger("cognen.input")
 
@@ -295,7 +298,7 @@ def _resolve(host: str, port: int) -> list[IPAddress]:
         raise ValueError("stream host could not be resolved") from exc
     out: list[IPAddress] = []
     for info in infos:
-        addr = info[4][0]
+        addr = str(info[4][0])   # sockaddr[0] is the host string for AF_INET/AF_INET6
         try:
             ip = ipaddress.ip_address(addr.split("%", 1)[0])
         except ValueError:

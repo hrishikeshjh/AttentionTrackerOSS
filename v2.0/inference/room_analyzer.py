@@ -222,9 +222,11 @@ class RoomAnalyzer:
                 # Blocking read — run in thread to avoid blocking event loop
                 ok, frame = await asyncio.to_thread(source.read)
 
-                if not ok:
+                if not ok or frame is None:
                     # VideoFileSource returns False on EOF; live sources
                     # return False only after exhausting all reconnect attempts.
+                    # (Every source pairs ok=False with frame=None and ok=True
+                    # with a frame; the None check narrows the Optional.)
                     logger.info("[%s] Source ended: %s", self.room_id, source.name)
                     break
 

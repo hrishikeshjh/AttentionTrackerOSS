@@ -111,16 +111,16 @@ def evaluate_behavior(sequences: Iterable, session) -> dict:
             ev_raw.update(rp, y, person_id=seq.stream_id)
     if n_seq == 0:
         return _skip("no test sequence with at least 15 frames at the analysis cadence")
-    dep, raw = ev_dep.compute(), ev_raw.compute()
+    dep_metrics, raw_metrics = ev_dep.compute(), ev_raw.compute()
     return {
         "status": "ok",
         "data_source": "real",
         "primary": "deployed",
-        "deployed": dep,
-        "raw_onnx": raw,
+        "deployed": dep_metrics,
+        "raw_onnx": raw_metrics,
         "n_sequences": n_seq,
         "note": "person boxes are the ground-truth boxes (isolates the classifier from detection/tracking)",
-        "targets_met": dep["targets_met"],
+        "targets_met": dep_metrics["targets_met"],
     }
 
 

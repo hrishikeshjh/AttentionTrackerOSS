@@ -386,6 +386,7 @@ def train(args: argparse.Namespace) -> dict:
     logger.info("Class weights (inverse frequency, present classes): %s",
                 np.round(class_weights.cpu().numpy(), 3).tolist())
     use_penalty   = getattr(args, "penalty_loss", False)
+    criterion: torch.nn.CrossEntropyLoss | None
     if use_penalty:
         logger.info("Using ConfusionPenaltyLoss (training/penalty_matrix.py)")
         criterion = None   # loss computed inline
@@ -415,7 +416,7 @@ def train(args: argparse.Namespace) -> dict:
 
             optimizer.zero_grad()
             logits = model(Xt)
-            if use_penalty:
+            if criterion is None:   # use_penalty
                 loss = ConfusionPenaltyLoss.compute(logits, yt, class_weights)
             else:
                 loss = criterion(logits, yt)

@@ -280,18 +280,11 @@ jobs:
           cache: pip
           cache-dependency-path: .github/ci/requirements-typecheck.txt
       - run: pip install -r ../.github/ci/requirements-typecheck.txt
-      # Informational, not a merge gate: this is the first mypy pass on a
-      # previously untyped-by-tool codebase. ~38 pre-existing findings
-      # remain (lazy-init "declare as None, assign real object later"
-      # patterns across several files, and a couple of dict-value-type
-      # inference limits) -- verified individually to be benign, not
-      # bugs, during the pass that added this config. Fixing them requires
-      # a structural refactor (e.g. Optional-typed lazy fields with
-      # explicit narrowing) that's a separate, larger effort. New code
-      # should still aim to be mypy-clean; this job surfaces regressions
-      # without blocking merges on the pre-existing backlog.
+      # Blocking merge gate: v2.0 is mypy-clean (config in v2.0/pyproject.toml).
+      # Only mypy is installed here, so the heavy optional deps (numpy, torch,
+      # ultralytics, cv2, fastapi, ...) resolve as Any via ignore_missing_imports;
+      # the code is also kept clean when they ARE installed (full server stack).
       - run: mypy .
-        continue-on-error: true
 
   v2-test:
     needs: changes

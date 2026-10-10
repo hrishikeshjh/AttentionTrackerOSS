@@ -42,8 +42,9 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Protocol, cast
 
 import anyio
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -94,6 +95,13 @@ def _validate_room_id(room_id: str) -> None:
 
 # ── Source configuration model ────────────────────────────────────────────────
 
+RTSPTransport = Literal["tcp", "udp"]
+# COGNEN_RTSP_TRANSPORT is read as a plain str and deliberately NOT validated
+# here: pydantic does not validate defaults, and RTSPSource rejects an invalid
+# value at start (-> 422). The cast only states the intended type.
+_DEFAULT_RTSP_TRANSPORT = cast(RTSPTransport, RTSP_TRANSPORT)
+
+
 class SourceConfig(BaseModel):
     """
     Describes the video input for a room.
@@ -118,7 +126,7 @@ class SourceConfig(BaseModel):
     device:          int            = Field(0, ge=0, le=63, description="Camera device index")
     process_every_n: int            = Field(PROCESS_EVERY_N_FRAMES, ge=1, le=1000)
     # Validated again in RTSPSource (an invalid COGNEN_RTSP_TRANSPORT default -> 422)
-    rtsp_transport:  Literal["tcp", "udp"] = Field(RTSP_TRANSPORT)
+    rtsp_transport:  RTSPTransport  = Field(_DEFAULT_RTSP_TRANSPORT)
     loop_file:       bool           = False
 
 
@@ -298,7 +306,7 @@ async def start_room(room_id: str, config: SourceConfig, principal: Principal = 
         analyzer.run_source(source, process_every_n=config.process_every_n),
         name=f"room:{room_id}",
     )
-    task.add_done_callback(lambda t, rid=room_id: _on_task_done(rid, t))
+    task.add_done_callback(partial(_on_task_done, room_id))
     _tasks[room_id] = task
     logger.info(
         "Started room=%s  source=%s (%s)  process_every_n=%d  key=%s",
@@ -355,14 +363,23 @@ class SlowClientError(Exception):
     """A send did not complete within COGNEN_WS_SEND_TIMEOUT_S."""
 
 
-async def _safe_close(websocket: WebSocket, code: int, reason: str = "") -> None:
+class WebSocketSender(Protocol):
+    """The send side of a WebSocket: all the pusher/close helpers use
+    (Starlette's WebSocket satisfies it; tests pass lightweight fakes)."""
+
+    async def send_text(self, data: str) -> None: ...
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None: ...
+
+
+async def _safe_close(websocket: WebSocketSender, code: int, reason: str = "") -> None:
     try:
         await asyncio.wait_for(websocket.close(code=code, reason=reason), timeout=1.0)
     except Exception:   # already closed / peer gone / transport stuck
         pass
 
 
-async def _send_bounded(websocket: WebSocket, text: str, lock: asyncio.Lock, timeout: float) -> None:
+async def _send_bounded(websocket: WebSocketSender, text: str, lock: asyncio.Lock, timeout: float) -> None:
     try:
         async with lock:
             await asyncio.wait_for(websocket.send_text(text), timeout=timeout)
@@ -370,7 +387,7 @@ async def _send_bounded(websocket: WebSocket, text: str, lock: asyncio.Lock, tim
         raise SlowClientError from None
 
 
-async def _ws_pusher(websocket: WebSocket, room_id: str, s: SecuritySettings, lock: asyncio.Lock) -> None:
+async def _ws_pusher(websocket: WebSocketSender, room_id: str, s: SecuritySettings, lock: asyncio.Lock) -> None:
     """Push the *latest* snapshot every push interval (no queue => no
     unbounded buffering). Identical payloads are not resent except as a
     heartbeat. A send that exceeds the timeout drops the client."""
@@ -477,14 +494,14 @@ async def room_websocket(websocket: WebSocket, room_id: str):
             tg.start_soon(_run, _ws_pusher(websocket, room_id, s, lock))
             tg.start_soon(_run, _ws_receiver(websocket, s, lock))
 
-        exc = outcome[0] if outcome else None
-        if exc is None or isinstance(exc, WebSocketDisconnect):
+        failure = outcome[0] if outcome else None
+        if failure is None or isinstance(failure, WebSocketDisconnect):
             logger.info("WebSocket closed: room=%s", room_id)
-        elif isinstance(exc, SlowClientError):
+        elif isinstance(failure, SlowClientError):
             logger.warning("Dropping slow WebSocket client: room=%s key=%s", room_id, principal.key_id)
             await _safe_close(websocket, 1008, "client too slow")
         else:
-            logger.error("Unexpected error in room_websocket: room=%s", room_id, exc_info=exc)
+            logger.error("Unexpected error in room_websocket: room=%s", room_id, exc_info=failure)
             await _safe_close(websocket, 1011)  # internal error
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: room=%s", room_id)

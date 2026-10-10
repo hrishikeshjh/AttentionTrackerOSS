@@ -78,7 +78,7 @@ def _encode_hand_proximity(proximity: str | None) -> float:
         "hands_on_desk": 0.65,
         "hands_not_visible": 0.6,
         "holding_phone": 0.2,
-    }.get(proximity, 0.6)
+    }.get(proximity, 0.6) if proximity is not None else 0.6
 
 
 def classify_category(

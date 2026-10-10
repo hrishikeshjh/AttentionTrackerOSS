@@ -7,11 +7,15 @@ Used for posture analysis (ARCHITECTURE.md §5.4).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from ultralytics import YOLO
 
 from server.config import POSE_CONF_THRESHOLD, POSE_ESTIMATOR_MODEL, require_model_file
+
+if TYPE_CHECKING:
+    from ultralytics.engine.results import Results
 
 # COCO keypoint indices
 KP = dict(
@@ -47,10 +51,15 @@ class PostureResult:
 class PoseEstimator:
     def __init__(self):
         self.model = YOLO(str(require_model_file(POSE_ESTIMATOR_MODEL)))
-        self.model.overrides["verbose"] = False
+        # ultralytics infers Model.overrides as dict[str, str] from its own
+        # string-valued assignments; the predictor accepts any cfg value.
+        overrides: dict[str, Any] = self.model.overrides
+        overrides["verbose"] = False
 
     def detect(self, frame: np.ndarray) -> list[PoseDetection]:
-        results = self.model(frame, conf=POSE_CONF_THRESHOLD, verbose=False)
+        # Model.__call__ is annotated for stream=True (Iterator) and embed
+        # (Tensor) too; a plain call returns list[Results].
+        results = cast("list[Results]", self.model(frame, conf=POSE_CONF_THRESHOLD, verbose=False))
         out: list[PoseDetection] = []
         for r in results:
             if r.keypoints is None:

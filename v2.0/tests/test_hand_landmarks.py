@@ -35,7 +35,8 @@ def test_missing_mediapipe_is_reported_not_raised(monkeypatch):
     monkeypatch.setitem(sys.modules, "mediapipe.tasks", None)
     det = hl.HandLandmarksDetector()
     assert not det.available and det.status == hl.STATUS_MEDIAPIPE_MISSING
-    assert det.detect(object()) == []
+    import numpy as np
+    assert det.detect(np.zeros((4, 4, 3), np.uint8)) == []
 
 
 def test_real_hand_landmarker_initialises():

@@ -194,6 +194,13 @@ class _FakeCap:
         pass
 
 
+def _cap_of(src: fs.FrameSource) -> _FakeCap | None:
+    """The (fake) capture a source opened; sources keep it in the private ``_cap``."""
+    cap = vars(src).get("_cap")
+    assert cap is None or isinstance(cap, _FakeCap)
+    return cap
+
+
 def _fake_cv2():
     import types
     return types.SimpleNamespace(
@@ -212,11 +219,13 @@ def test_guarded_rtsp_revalidates_on_every_connect(clean_env):
     guard = fs.validate_api_source("rtsp", url)
     src = fs.make_source("rtsp", url=url, guard=guard)
     assert src.open()
-    assert src._cap.url == "rtsp://93.184.216.34:554/ch1"        # pinned IP literal
-    assert "protocol_whitelist;rtsp" in src._cap.env and "format_whitelist" in src._cap.env
+    cap = _cap_of(src)
+    assert cap is not None and cap.env is not None
+    assert cap.url == "rtsp://93.184.216.34:554/ch1"             # pinned IP literal
+    assert "protocol_whitelist;rtsp" in cap.env and "format_whitelist" in cap.env
     answers["cam.example.com"] = ["127.0.0.1"]                   # rebinding
     assert src.open() is False
-    assert src._cap is None
+    assert _cap_of(src) is None
 
 
 def test_guarded_http_source_disables_redirects(clean_env):
@@ -225,7 +234,9 @@ def test_guarded_http_source_disables_redirects(clean_env):
     url = "https://93.184.216.34/live.ts"
     src = fs.make_source("rtsp", url=url, guard=fs.validate_api_source("rtsp", url))
     assert src.open()
-    assert "max_redirects;0" in src._cap.env and "hls" not in src._cap.env
+    cap = _cap_of(src)
+    assert cap is not None and cap.env is not None
+    assert "max_redirects;0" in cap.env and "hls" not in cap.env
 
 
 # ── File sources (light tier) ────────────────────────────────────────────────
@@ -265,7 +276,9 @@ def test_guarded_file_rechecks_at_open(clean_env, tmp_path):
     guard = fs.validate_api_source("file", str(clip))
     src = fs.make_source("file", url=str(clip), guard=guard)
     assert src.open()
-    assert src._cap.env.startswith("protocol_whitelist;file")
+    cap = _cap_of(src)
+    assert cap is not None and cap.env is not None
+    assert cap.env.startswith("protocol_whitelist;file")
     outside = tmp_path / "outside.mp4"
     outside.write_bytes(b"x")
     clip.unlink()

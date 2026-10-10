@@ -25,24 +25,24 @@ def test_no_group_leaks_across_split():
     n_groups = 20
     windows_per_group = 10
 
-    X, y, groups = [], [], []
+    X_rows, y_list, group_list = [], [], []
     for g in range(n_groups):
         for _ in range(windows_per_group):
-            X.append(rng.random((15, 13)).astype(np.float32))
-            y.append(rng.integers(0, 6))
-            groups.append(f"clip_{g}")
+            X_rows.append(rng.random((15, 13)).astype(np.float32))
+            y_list.append(rng.integers(0, 6))
+            group_list.append(f"clip_{g}")
 
-    X = np.stack(X)
-    y = np.array(y)
-    groups = np.array(groups, dtype=object)
+    X = np.stack(X_rows)
+    y = np.array(y_list)
+    groups = np.array(group_list, dtype=object)
 
     X_tr, y_tr, X_val, y_val = _train_val_split(X, y, groups, val_ratio=0.2, seed=1)
 
     # Recover which group each returned sample belongs to by re-deriving
     # membership via a lookup table (groups are known ahead of time here).
     group_of: dict[str, list[int]] = {}
-    for i, g in enumerate(groups):
-        group_of.setdefault(g, []).append(i)
+    for i, gname in enumerate(group_list):
+        group_of.setdefault(gname, []).append(i)
 
     # Re-run split index recovery: since _train_val_split only returns
     # X/y (not indices), verify via set membership on the raw arrays

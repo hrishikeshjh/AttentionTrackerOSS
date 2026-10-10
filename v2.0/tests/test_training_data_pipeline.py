@@ -209,6 +209,7 @@ def test_loader_encoder_matches_room_analyzer_per_person_path():
         area = (200 * 400) / (ra.INPUT_WIDTH * ra.INPUT_HEIGHT)
         mine = enc.step(ts, o, face_detector_available=True, face_area=area)
         assert np.array_equal(server_vec, mine.vector), i
+        assert state.last_result is not None
         assert state.last_result.label == mine.result.label
 
 

@@ -225,7 +225,7 @@ class EngageNetDataset(BaseBehaviorDataset):
                 ts = [k * period_src for k in range(len(rows))]
             else:
                 rows = sorted(rows, key=lambda r: (r.ts_ms, r.order))
-                ts = [float(r.ts_ms) for r in rows]   # type: ignore[arg-type]
+                ts = [float(r.ts_ms) for r in rows if r.ts_ms is not None]   # all set (checked above)
             keep = subsample_by_timestamp(ts, self.period_ms)
 
             det = self._get_face_detector()

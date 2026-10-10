@@ -18,6 +18,7 @@ Run: pytest v2.0/tests/test_context_gate.py
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -164,7 +165,7 @@ def _analyzer(objects, pose=None, source=None, hands=None):
 
 
 def _run(a, n=WINDOW_SIZE + 2):
-    snap = None
+    snap: dict[str, Any] = {}
     for _ in range(n):
         snap = a._process_frame(FRAME)
     return snap["persons"][0]

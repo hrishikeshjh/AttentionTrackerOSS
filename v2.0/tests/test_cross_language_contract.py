@@ -30,6 +30,7 @@ import ast
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -186,11 +187,7 @@ class _FakeSession:
         self.channels = channels
 
     def get_inputs(self):
-        class _In:
-            name = "input"
-        i = _In()
-        i.shape = ["batch", self.channels, WINDOW_SIZE]
-        return [i]
+        return [SimpleNamespace(name="input", shape=["batch", self.channels, WINDOW_SIZE])]
 
     def run(self, output_names, feeds):
         self.calls.append((output_names, feeds))

@@ -94,14 +94,20 @@ class BehaviorEvaluator:
             y_true:    Ground-truth label index / list of indices.
             person_id: Optional ID for temporal consistency tracking.
         """
-        if isinstance(y_pred, int):
-            y_pred, y_true = [y_pred], [y_true]
-        self._y_true.extend(list(y_true))
-        self._y_pred.extend(list(y_pred))
+        preds: list[int]
+        trues: list[int]
+        if isinstance(y_pred, int) and isinstance(y_true, int):
+            preds, trues = [y_pred], [y_true]
+        elif not isinstance(y_pred, int) and not isinstance(y_true, int):
+            preds, trues = list(y_pred), list(y_true)
+        else:
+            raise TypeError("y_pred and y_true must both be ints or both be sequences")
+        self._y_true.extend(trues)
+        self._y_pred.extend(preds)
 
         if person_id is not None:
-            self._sequences[person_id].extend(list(y_pred))
-            self._true_sequences[person_id].extend(list(y_true))
+            self._sequences[person_id].extend(preds)
+            self._true_sequences[person_id].extend(trues)
 
     def reset(self) -> None:
         self._y_true.clear()

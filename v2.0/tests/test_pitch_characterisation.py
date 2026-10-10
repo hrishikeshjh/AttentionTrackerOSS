@@ -45,6 +45,7 @@ def sim():
     if not path.exists() or not (EVIDENCE / "legacy_pitch_constants.json").exists():
         pytest.skip("DACE pitch evidence files not present")
     spec = importlib.util.spec_from_file_location("dace_pitch_sim", path)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -70,10 +71,11 @@ def _landmarks(img: dict, c: dict) -> list:
 
 def _python_pitches(sim, c) -> list[float]:
     pts = sim.model_points(c)
-    out = []
+    out: list[float] = []
     for deg in c["tiltsDeg"]:
         img = sim.project(pts, sim.rotation_head_down(deg), None)
         _yaw, pitch, _roll = calculate_head_pose(_landmarks(img, c))
+        assert pitch is not None
         out.append(pitch)
     return out
 

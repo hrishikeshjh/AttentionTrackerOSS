@@ -12,14 +12,17 @@ from pathlib import Path
 
 from features.hand_proximity import parse_hand_proximity_source
 
-try:
-    from dotenv import load_dotenv
-except ImportError:  # python-dotenv is in server/requirements.txt; absent only
-    # in the light CI test tier, where no .env file is needed.
-    def load_dotenv(*_args, **_kwargs) -> bool:
-        return False
 
-load_dotenv()
+def _load_env_file() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # python-dotenv is in server/requirements.txt; absent only
+        # in the light CI test tier, where no .env file is needed.
+        return
+    load_dotenv()
+
+
+_load_env_file()
 
 # room_id flows directly into filesystem paths (load_seat_map below) and
 # is used as a dict key elsewhere -- restrict to a safe charset so a

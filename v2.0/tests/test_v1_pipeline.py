@@ -18,6 +18,7 @@ Run: pytest v2.0/tests/test_v1_pipeline.py
 
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -27,7 +28,7 @@ from inference.behavior_classifier import BehaviorClassifier
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _metrics(**kwargs) -> FaceMetricsResult:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         ear=0.30, mar=0.02, pitch=0.0, yaw=0.0, roll=0.0,
         gaze_x=0.0, gaze_y=0.0,
         blink_detected=False, blink_rate=15.0, perclos=5.0,
@@ -59,7 +60,7 @@ class TestV1FaceMetrics:
 
     def test_ear_normal(self):
         m = _metrics(ear=0.32)
-        assert 0.0 < m.ear < 1.0
+        assert m.ear is not None and 0.0 < m.ear < 1.0
 
     def test_perclos_zero(self):
         m = _metrics(perclos=0.0)
