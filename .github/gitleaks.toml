@@ -36,3 +36,20 @@ condition = "AND"
 paths = ['''^v1\.0/scripts/models\.sha256$''']
 regexTarget = "secret"
 regexes = ['''^[0-9a-f]{64}$''']
+
+# 3. Fixed fake API keys used as fixtures in the v2.0 server security tests
+#    (v2.0/tests/test_server_security.py: KEY_A / KEY_B), plus the env-var name
+#    `COGNEN_WS_MAX_PER_KEY=` that generic-api-key mistakes for a secret. They
+#    authenticate nothing outside the test client. Both the file AND the exact
+#    values must match; any other secret in that file, or these values
+#    elsewhere, still fails the scan.
+[[allowlists]]
+description = "Fake API-key fixtures in the v2.0 server security tests"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^v2\.0/tests/test_server_security\.py$''']
+regexTarget = "secret"
+regexes = [
+  '''^key-(alpha|bravo)-0123456789abcdef$''',
+  '''^COGNEN_WS_MAX_PER_KEY=$''',
+]
