@@ -73,14 +73,76 @@ export type BehaviorResult = {
   label: BehaviorLabel;
   attentionScore: number;  // 0–100 mapped from label
   confidence: number;      // 0–1 classifier confidence
-  /** 'temporal' = full 15-frame window used; 'rule_based' = fallback */
-  source: 'temporal' | 'rule_based';
+  /** 'temporal' = full 15-frame window used; 'rule_based' = fallback;
+   *  'dace_rules' = DACE ordered rule layer (Annex A.4) */
+  source: 'temporal' | 'rule_based' | 'dace_rules';
+};
+
+// ==================== DACE (all optional; absent when DACE is off) ====================
+
+/**
+ * "Unsure" reason codes (Annex A.5). "Unsure" is NOT an AttentionState or a
+ * BehaviorLabel; it is carried as flags next to them.
+ *   U1 looking down > τ_g with no phone/book/writing evidence
+ *   U2 looking down with the desk not visible (takes precedence over U1)
+ *   U3 low tracking quality (face missing in ≥ 50% of the window)
+ *   U4 conflicting evidence (phone in use in one hand, pen-grip motion in the other)
+ *   U5 model uncertain (Stage 2, conformal set with > 1 class)
+ */
+export type UnsureReason = 'U1' | 'U2' | 'U3' | 'U4' | 'U5';
+
+/** Which scoring path produced an MLPrediction. */
+export type ScoringMode = 'legacy' | 'upgraded' | 'dace';
+
+/** DACE measurement-layer values for one frame. Angles in degrees, +pitch = head down. */
+export type DaceMeasurementSnapshot = {
+  pitchDeg: number | null;
+  /** Δθ = θ − θ_ref (+down) */
+  relPitchDeg: number | null;
+  yawDeg: number | null;
+  rollDeg: number | null;
+  /** vertical eye-in-head gaze g_t in [−1, 1], +down */
+  gazeV: number | null;
+  /** horizontal eye-in-head gaze in [−1, 1] */
+  gazeH: number | null;
+  gazeValid: boolean;
+  /** r_t = EAR_t / Ê(g_t) */
+  residualOpenness: number | null;
+  /** gaze-corrected PERCLOS over 60 s, fraction 0-1 */
+  correctedPerclos: number | null;
+  /** D_t */
+  lookingDown: boolean;
+  /** pitch reference still being estimated */
+  calibrating: boolean;
+};
+
+/** Window-level desk-zone evidence (Annex A.2). */
+export type DeskEvidenceSummary = {
+  phoneInUse: boolean;
+  phonePresent: boolean;
+  book: boolean;
+  writing: boolean;
+  deskVisible: boolean;
+  /** U4 condition: phone in use and pen-grip motion in the other hand */
+  conflict: boolean;
+};
+
+/** Compact DACE window output attached to metrics/predictions. */
+export type DaceOutputSummary = {
+  label: BehaviorLabel | null;
+  unsure: boolean;
+  reason: UnsureReason | null;
+  /** id of the rule that fired (see scoring/dace/rules.ts RuleId) */
+  rule: string;
 };
 
 export type SessionDataPoint = {
   timestamp: number;
   attentionScore: number;
   attentionState: AttentionState;
+  /** DACE: score was held because the window was "Unsure" (excluded from averages/trends) */
+  unsure?: boolean;
+  unsureReason?: UnsureReason;
 };
 
 export type SessionSummary = {
@@ -132,6 +194,11 @@ export type ExtendedFaceMetrics = FaceMetrics & {
   handObjectProximity?: HandObjectProximity;
   studyContext?: StudyContext;
   behaviorResult?: BehaviorResult;
+
+  // ── DACE (optional; only set when DACE is enabled) ──
+  dace?: DaceMeasurementSnapshot;
+  deskEvidence?: DeskEvidenceSummary;
+  daceOutput?: DaceOutputSummary;
 };
 
 // ML Prediction with confidence and feature importance
@@ -148,6 +215,17 @@ export type MLPrediction = {
   // averaged away before it reaches them.
   contradictionIndex?: number; // 0-1, EMA-smoothed
   contradictionCategory?: 'coherent' | 'fatigue_masking' | 'prop_without_engagement' | 'context_conflict';
+
+  // ── DACE (optional; only set on the DACE scoring path) ──
+  scoringMode?: ScoringMode;
+  /** true when the score was held at the last smoothed value because the window was Unsure */
+  scoreHeld?: boolean;
+  /** window was Unsure. If unsure && !scoreHeld there is no score yet (show "-", record no point) */
+  unsure?: boolean;
+  unsureReason?: UnsureReason;
+  /** DACE behaviour label (null when Unsure) */
+  daceLabel?: BehaviorLabel | null;
+  daceRule?: string;
 };
 
 // Session-level analytics
@@ -160,6 +238,8 @@ export type SessionAnalytics = {
   fatigueOnset: number | null; // timestamp when fatigue detected
   optimalEngagementWindow: { start: number; end: number } | null;
   attentionVariability: number; // standard deviation of scores
+  /** DACE: share (0-1) of data points that were Unsure; present only when the data carries DACE flags */
+  unsureShare?: number;
 };
 
 // Enhanced session data point

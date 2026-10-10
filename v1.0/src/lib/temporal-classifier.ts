@@ -40,7 +40,7 @@ const FEATURE_DIM = 13;
  * Attention scores mapped from behavior labels.
  * Used to convert a behavior classification → attentionScore field on MLPrediction.
  */
-const BEHAVIOR_ATTENTION_SCORES: Record<BehaviorLabel, number> = {
+export const BEHAVIOR_ATTENTION_SCORES: Record<BehaviorLabel, number> = {
   attentive_screen: 85,
   attentive_reading: 80,
   distracted: 45,

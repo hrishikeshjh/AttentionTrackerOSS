@@ -242,7 +242,13 @@ export class SessionAnalyticsEngine {
      * Calculate comprehensive session analytics
      */
     analyze(): SessionAnalytics {
-        if (this.data.length < 5) {
+        // DACE: "Unsure" points hold the score and are excluded from every
+        // statistic (average, trend, periods, fatigue onset). unsureShare is
+        // reported only when the data carries DACE flags, so legacy sessions
+        // produce exactly the same object as before.
+        const data = this.scoredData();
+        const extra = this.unsureShareField();
+        if (data.length < 5) {
             return {
                 attentionTrend: 'stable',
                 trendSlope: 0,
@@ -252,11 +258,12 @@ export class SessionAnalyticsEngine {
                 fatigueOnset: null,
                 optimalEngagementWindow: null,
                 attentionVariability: 0,
+                ...extra,
             };
         }
 
         // Calculate trend
-        const recentData = this.data.slice(-TREND_WINDOW_SIZE);
+        const recentData = data.slice(-TREND_WINDOW_SIZE);
         const trendPoints = recentData.map((d, i) => ({ x: i, y: d.attentionScore }));
         const { slope, rSquared } = linearRegression(trendPoints);
 
@@ -268,20 +275,20 @@ export class SessionAnalyticsEngine {
         }
 
         // Find periods
-        const peakAttentionPeriods = findPeriods(this.data, PERIOD_THRESHOLD_HIGH, true);
-        const lowAttentionPeriods = findPeriods(this.data, PERIOD_THRESHOLD_LOW, false);
+        const peakAttentionPeriods = findPeriods(data, PERIOD_THRESHOLD_HIGH, true);
+        const lowAttentionPeriods = findPeriods(data, PERIOD_THRESHOLD_LOW, false);
 
         // Detect fatigue
-        const fatigueOnset = detectFatigueOnset(this.data);
+        const fatigueOnset = detectFatigueOnset(data);
 
         // Detect anomalies
-        const { blinkAnomalies } = detectAnomalies(this.data);
+        const { blinkAnomalies } = detectAnomalies(data);
 
         // Find optimal window
-        const optimalEngagementWindow = findOptimalWindow(this.data);
+        const optimalEngagementWindow = findOptimalWindow(data);
 
         // Calculate variability
-        const scores = this.data.map(d => d.attentionScore);
+        const scores = data.map(d => d.attentionScore);
         const attentionVariability = calculateStdDev(scores);
 
         return {
@@ -293,18 +300,32 @@ export class SessionAnalyticsEngine {
             fatigueOnset,
             optimalEngagementWindow,
             attentionVariability,
+            ...extra,
         };
+    }
+
+    /** Points that carry a score (DACE "Unsure" points removed). */
+    private scoredData(): SessionDataPoint[] {
+        return this.data.filter(d => !d.unsure);
+    }
+
+    /** { unsureShare } when any point carries the DACE `unsure` flag, else {}. */
+    private unsureShareField(): { unsureShare?: number } {
+        if (!this.data.some(d => d.unsure !== undefined)) return {};
+        const n = this.data.filter(d => d.unsure).length;
+        return { unsureShare: this.data.length > 0 ? n / this.data.length : 0 };
     }
 
     /**
      * Get real-time trend (last 10 data points)
      */
     getRealtimeTrend(): { trend: 'up' | 'down' | 'stable'; strength: number } {
-        if (this.data.length < 5) {
+        const data = this.scoredData();
+        if (data.length < 5) {
             return { trend: 'stable', strength: 0 };
         }
 
-        const recentData = this.data.slice(-10);
+        const recentData = data.slice(-10);
         const points = recentData.map((d, i) => ({ x: i, y: d.attentionScore }));
         const { slope, rSquared } = linearRegression(points);
 
@@ -329,7 +350,8 @@ export class SessionAnalyticsEngine {
         scoreRange: number;
         stateBreakdown: Record<string, number>;
     } {
-        if (this.data.length === 0) {
+        const data = this.scoredData();
+        if (data.length === 0) {
             return {
                 totalDataPoints: 0,
                 averageScore: 0,
@@ -340,18 +362,18 @@ export class SessionAnalyticsEngine {
             };
         }
 
-        const scores = this.data.map(d => d.attentionScore);
+        const scores = data.map(d => d.attentionScore);
         const averageScore = scores.reduce((a, b) => a + b, 0) / scores.length;
         const minScore = Math.min(...scores);
         const maxScore = Math.max(...scores);
 
         const stateBreakdown: Record<string, number> = {};
-        for (const point of this.data) {
+        for (const point of data) {
             stateBreakdown[point.attentionState] = (stateBreakdown[point.attentionState] || 0) + 1;
         }
 
         return {
-            totalDataPoints: this.data.length,
+            totalDataPoints: data.length,
             averageScore: Math.round(averageScore),
             minScore,
             maxScore,
