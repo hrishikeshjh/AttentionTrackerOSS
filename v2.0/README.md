@@ -374,10 +374,14 @@ Frame-skip: `--process-every N` analyses 1 in N frames. At 15 FPS with N=3 → ~
 ## 11. FastAPI Server & WebSocket
 
 ```bash
-uvicorn server.main:app --host 0.0.0.0 --port 8000
+export COGNEN_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python -m server.main                       # binds API_HOST (default 127.0.0.1)
+# or: uvicorn server.main:app --host 0.0.0.0 --port 8000 --ws-max-size 4096
 ```
 
-WebSocket pushes room analytics at **5 Hz** to connected dashboard clients.
+WebSocket pushes the latest room snapshot (up to **5 Hz**, unchanged snapshots
+only as a 15 s heartbeat) to connected dashboard clients. Every endpoint except
+`/healthz` and `/static` requires an API key — see [§24 Security](#security).
 
 ---
 
@@ -510,11 +514,16 @@ python3 run_analyzer.py --source camera --print-json | jq '.room_attention'
 | `POST` | `/rooms/{room_id}/stop` | Stop analysis | `404` room not found (previously returned `200` with an `{"error": ...}` body) |
 | `GET` | `/rooms/{room_id}/snapshot` | Latest analytics JSON | `404` room not found |
 | `GET` | `/rooms` | List all rooms | — |
-| `WS` | `/ws/room/{room_id}` | Real-time push @ 5 Hz | Closes with code `1008` (policy violation) for an invalid/not-found `room_id`, `1011` (internal error) on an unexpected server-side failure |
+| `WS` | `/ws/room/{room_id}` | Real-time push (latest snapshot, ≤ 5 Hz) | Pre-accept close (HTTP 403) `1008` for bad `room_id` / Origin / API key, `1013` when a connection cap is hit; after accept `1008` room not found or slow client, `1009` oversized client message, `1011` internal error |
+| `GET` | `/healthz` | Liveness, unauthenticated: `{"status":"ok"}` | — |
 
-`room_id` must match `^[a-zA-Z0-9_-]+$` — see [§24](#24-server-hardening) for why.
+All routes except `/healthz` and `/static` additionally return `401` (no key), `403` (wrong key), `429` (rate limit / too many failed auths, with `Retry-After`), `503` (no `COGNEN_API_KEY` configured), `413` (body > `COGNEN_MAX_BODY_BYTES`).
+
+`room_id` must match `^[a-zA-Z0-9_-]{1,64}$` — see [§24](#24-server-hardening) for why.
 
 Environment variables: `COGNEN_PROCESS_EVERY_N`, `COGNEN_RTSP_TRANSPORT`, `COGNEN_CAMERA_BUFFER`, `COGNEN_MAX_CONCURRENT_ROOMS` (default 20), `API_HOST`, `API_PORT`
+
+API source policy (`input/frame_source.py::validate_api_source`) and all security env vars: see [§24 Security](#security). `rtsp_transport` must be `tcp` or `udp`. The CLI (`run_analyzer.py`) is not restricted.
 
 ---
 
@@ -648,6 +657,43 @@ A pass through the training/eval pipeline surfaced and fixed several real bugs, 
 - **WebSocket robustness**: `room_websocket` previously had no exception handling around snapshot serialization — an exception there crashed the streaming task silently with no client-visible error. Now wraps serialization per-tick (logs and skips a bad tick rather than dying) and closes with an explicit code (`1008` policy violation for an invalid/missing room, `1011` internal error on an unexpected failure) instead of hanging.
 - **Concurrent-room rate limit**: `/rooms/{room_id}/start` could previously spawn unbounded `asyncio.create_task()` calls. Now capped at `COGNEN_MAX_CONCURRENT_ROOMS` (default 20, env-configurable) — the `(N+1)`th concurrent room-start request gets `429`. No new dependency (a simple in-process counter, not `slowapi`).
 - **`dashboard/static` directory**: `server/main.py` mounts `StaticFiles(directory=.../dashboard/static)` at import time — this directory didn't exist anywhere in the repo, meaning the server would have crashed on startup before ever handling a request. Created (with a `.gitkeep`) so the mount succeeds; found and fixed incidentally while writing a `TestClient`-based verification for the fixes above.
+
+<a id="security"></a>
+### Security (API auth, SSRF, WebSocket)
+
+Implemented in `server/security.py`, `server/main.py`, `input/frame_source.py`; tests in `tests/test_server_security.py`. Env vars are also listed in `server/config.py`.
+
+**Secure defaults**: binds `127.0.0.1`; with no `COGNEN_API_KEY` protected routes answer `503` and `python -m server.main` refuses a non-loopback `API_HOST`; `/docs` & `/openapi.json` off; no CORS origins; private/loopback/metadata stream targets, http(s) streams, URL credentials and camera sources all denied.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `COGNEN_API_KEY` | unset | Comma-separated keys (≥ 16 chars; several = rotation). Send `X-API-Key: <key>`; WebSocket may use `?api_key=` (browsers can't set WS headers — query strings can land in proxy logs, prefer the header for non-browser clients). Compared with `secrets.compare_digest`. |
+| `COGNEN_ALLOW_INSECURE` | off | `1` = no auth when no key is set (local dev; loud warning once). |
+| `COGNEN_AUTH_FAIL_RATE_PER_MIN` / `_BURST` | 10 / 10 | Failed-auth bucket per client IP → `429`. |
+| `COGNEN_START_RATE_PER_MIN` / `COGNEN_START_BURST` | 6 / 3 | `/start` token bucket, per key **and** per IP → `429` + `Retry-After`. |
+| `COGNEN_MAX_BODY_BYTES` | 16384 | Request body cap → `413` (Content-Length and streamed). |
+| `COGNEN_CORS_ORIGINS` | none | Exact origins (`https://host[:port]`); `*` refused; credentials never allowed. Also the WebSocket Origin allowlist (requests without Origin = non-browser, still need a key). |
+| `COGNEN_ENABLE_DOCS` | off | Expose `/docs`, `/redoc`, `/openapi.json`. |
+| `COGNEN_WS_MAX_PER_KEY` / `_PER_ROOM` / `_TOTAL` | 8 / 32 / 256 | WebSocket connection caps (`1013`). |
+| `COGNEN_WS_SEND_TIMEOUT_S` | 2.0 | A send slower than this drops the client (backpressure; only the latest snapshot is ever sent, nothing is queued). |
+| `COGNEN_WS_PUSH_INTERVAL_S` / `COGNEN_WS_HEARTBEAT_S` | 0.2 / 15 | Push period / resend period for an unchanged snapshot. |
+| `COGNEN_WS_MAX_MESSAGE_BYTES` / `COGNEN_WS_MAX_CLIENT_MSGS_PER_S` | 4096 / 5 | Client→server message limits (`1009` / `1008`); text `ping` → `{"type":"pong"}`. `python -m server.main` also sets uvicorn `ws_max_size` and protocol pings (20 s). |
+| `COGNEN_VIDEO_DIRS` | `v2.0/data/videos` | Roots for `file` sources; the **realpath** (all symlinks resolved) must be inside, re-checked at open. |
+| `COGNEN_VIDEO_EXTENSIONS` | common video types | File extension allowlist (blocks `.m3u8`/`.ffconcat` playlists). |
+| `COGNEN_STREAM_SCHEMES` | `rtsp,rtsps` | Add `http,https` to permit HTTP streams (redirects disabled). |
+| `COGNEN_STREAM_HOSTS` | unset | Allowlist of hostnames **and/or CIDRs** (e.g. `192.168.10.0/24,cam1.lan`). When set, other hosts are refused. A listed name may resolve to private IPs; only a CIDR can admit loopback/link-local. |
+| `COGNEN_ALLOW_PRIVATE_STREAMS` | off | Allow RFC1918 / CGNAT / IPv6 ULA targets without an allowlist. |
+| `COGNEN_STREAM_PORTS` | any | Optional port allowlist. |
+| `COGNEN_ALLOW_URL_CREDENTIALS` | off | Allow `rtsp://user:pass@…` (always redacted in logs). |
+| `COGNEN_ALLOW_CAMERA_SOURCE` | off | Allow `source_type: "camera"` via the API. |
+
+**SSRF policy**: every A/AAAA record of the stream host is checked; any disallowed record rejects the URL. Always denied unless a `COGNEN_STREAM_HOSTS` CIDR covers it: loopback, link-local (incl. `169.254.169.254` metadata, `fe80::/10`), unspecified, multicast, reserved. IPv4-mapped, NAT64, 6to4 and Teredo IPv6 forms are judged by the embedded IPv4. FFmpeg runs with protocol/demuxer whitelists (no HLS/DASH/concat, no `file:` from a stream).
+
+**DNS rebinding**: `rtsp://` hostnames are pinned — FFmpeg connects to the validated IP literal. `rtsps`/`http(s)` can't be pinned without breaking TLS/Host, so they are re-resolved and re-validated before every (re)connect; a small window between that check and FFmpeg's own lookup remains. FFmpeg cannot turn off RTSP 3xx redirects (remaining risk, limited by the rtsp/rtp-only protocol whitelist). Prefer `COGNEN_STREAM_HOSTS` with CIDRs for CCTV networks.
+
+**Errors and logs**: unhandled errors return `{"detail":"internal server error","request_id":…}` (traceback only in the server log); 422 bodies don't repeat submitted values; a missing-model 500 carries no filesystem path. Log records from the `uvicorn*`/`cognen*` loggers are passed through a redaction filter (`api_key=`, `X-API-Key`, URL userinfo); stream URLs are logged without credentials or query strings; keys are logged only as a SHA-256 prefix. Responses carry `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and on API paths `Cache-Control: no-store` + `CSP default-src 'none'`.
+
+**Proxies**: rate limits use the TCP peer address. Behind a reverse proxy, run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy ip>`. `X-Forwarded-For` is never trusted directly.
 
 ---
 

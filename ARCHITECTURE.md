@@ -487,6 +487,8 @@ CLASSES = [
 ]
 ```
 
+**As implemented in v2.0** (`features/feature_vector.py`, FEATURE_VECTOR_VERSION 2): 15 channels per frame = `[gaze_x, gaze_y, pitch_norm, yaw_norm, ear, perclos, head_pose_stability, obj_book, obj_phone, obj_laptop, obj_none, fidget, hand_proximity_code, posture_upright, posture_lean_norm]`; the first 13 are identical to v1.0's `encode13` model input, posture comes from §5.4 (`lean_angle / 90`; unknown posture = (1, 0)). `pitch_norm` is relative pitch / 90 and `gaze_y` vertical gaze, both **down = negative**.
+
 ### 5.4 Posture Analysis from Pose Keypoints
 
 ```python
@@ -1020,7 +1022,7 @@ Stage 1 targets (proposal objectives, unmeasured): correct pitch sign in 100% of
 
 ### 11.13 Scope
 
-v1.0 web app only. v2.0 (Python) and the Chrome extension keep the **old** formulas deliberately; this divergence is known and documented (`extension/lib/ml-core.js` is a hand copy, not shared code). The v2.0 side now has contract tests that pin the known divergences: `tests/test_cross_language_contract.py` (generated `encode13` fixture; proximity codes differ between v1.0's rule layer and v2.0; v1.0's ONNX path matches v2.0), `tests/test_pitch_characterisation.py` (documents the legacy pitch defect in the Python formula; v2.0 knowingly keeps it) and `tests/test_hand_proximity.py`. `scoring/dace/` is not shared with the extension and is not re-exported from `scoring/index.ts`; the annex sentence saying `scoring/` is shared with the extension is inaccurate (plan D3).
+DACE as a whole (E/T/U, scheduler, UI) is v1.0 web app only; the Chrome extension keeps the **old** formulas (`extension/lib/ml-core.js` is a hand copy, not shared code). **v2.0 has ported the measurement layer M** (`v2.0/features/dace_measurement.py`: MediaPipe transformation-matrix pitch, +down, relative to a per-track 5 s screen-facing reference with absent/camera-move resets; blendshape gaze with iris cross-check; gaze-corrected eye openness and PERCLOS) and the hand-object relations (`features/hand_object.py`, MediaPipe HandLandmarker, `COGNEN_HAND_PROXIMITY=hands`; default `pose` = YOLOv8-pose wrists, `off` = opt-out). v2.0 flips the measurement sign once, so its feature vector and rules use **down = negative** like v1.0's D7 legacy-field substitution; the 68-point formula is only a labelled fallback. v2.0's model input is versioned: FEATURE_VECTOR_VERSION 2 = the 13 v1.0-compatible channels + 2 posture channels (15; `behavior_classifier_v3.onnx`, synthetic-only training), and v1.0 `loadModel(url, { featureDim: 15 })` pads posture with (1, 0). Contract tests: `tests/test_cross_language_contract.py` (generated `encode13` fixture; first 13 channels), `tests/test_feature_vector_v2_contract.py` (`shared/fixtures/encode15_v2.json`), `tests/test_pitch_characterisation.py` (legacy pitch defect, fallback only), `tests/test_dace_measurement.py`, `tests/test_context_gate.py` and `tests/test_hand_proximity.py`. `scoring/dace/` is not shared with the extension and is not re-exported from `scoring/index.ts`; the annex sentence saying `scoring/` is shared with the extension is inaccurate (plan D3).
 
 ### 11.14 Decisions pending supervisors
 

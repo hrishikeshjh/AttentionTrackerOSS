@@ -539,7 +539,7 @@ v1.0/
 │   └── dace/                      # replay-features.ts, metrics.ts, cvat-windows.ts (DACE evaluation tooling)
 ├── eslint.config.mjs              # ESLint flat config (next/core-web-vitals + typescript-eslint)
 ├── vitest.config.ts               # Vitest test runner config
-├── (.env.example is referenced in §15 but does not exist in the repo)
+├── .env.example                   # placeholder environment template (§15)
 ├── package.json
 ├── next.config.ts
 ├── tailwind.config.ts
@@ -649,6 +649,10 @@ GEMINI_API_KEY=...
 >
 > `GEMINI_API_KEY` (or `GOOGLE_API_KEY`, either name works) **is** secret — used by `src/ai/genkit.ts`'s `googleAI()` plugin for Gemini access. Get one from [Google AI Studio](https://aistudio.google.com/apikey). Never commit a real value.
 >
+> `FIREBASE_PROJECT_ID` (optional, server only) is the project whose ID tokens the report server action accepts; it defaults to `NEXT_PUBLIC_FIREBASE_PROJECT_ID`.
+>
+> **Authentication model.** The dashboard's sign-in guard (`src/app/dashboard/layout.tsx`) runs in the browser: Firebase client auth lives in the browser, so Next.js middleware cannot see it without a session cookie, and the guard only controls what UI is shown. The one server-side resource, the report export (`generateReportAction` in `src/app/actions.ts`), authenticates every call itself: the client sends its Firebase ID token, which is verified against Google's public signing keys (`src/lib/server/firebase-id-token.ts`, `node:crypto`, no extra dependency), then the call is rate-limited per user (5 per 10 min per server instance) and its input strictly validated before Gemini is called.
+>
 > Deployed via Firebase App Hosting: see `apphosting.yaml`, which declares the public Firebase vars directly and documents referencing `GEMINI_API_KEY` via `firebase apphosting:secrets:set` rather than plaintext.
 
 **DACE variables (all optional; DACE is off when none are set).** Read by `src/lib/dace/config.ts`. `PRESET` is applied first, then the individual flags override it. Invalid values are ignored with a warning.
@@ -702,7 +706,7 @@ See [ARCHITECTURE.md §11](../ARCHITECTURE.md#11-dace-downward-attention-context
 2. **No raw video stored** — only derived scores persisted
 3. **Extension data** — stored locally in Chrome's storage
 4. **Firebase** — currently only Firebase Auth is used; no session data is written to Firestore
-5. **Report generation** — when you export a report, the session summary (derived scores and statistics, no frames) is sent to the Genkit/Gemini report generator
+5. **Report generation** — when you export a report, the session summary (derived scores and statistics, no frames) is sent to the Genkit/Gemini report generator; the request is only accepted with a valid Firebase ID token
 6. **DACE evaluation logs** (research builds only) — no images, no user id, random session id, manual download only; a data-retention limit is still to be implemented
 
 ---
