@@ -756,7 +756,7 @@ Historically, the web app (`ml-engine.ts`/`face-geometry.ts`), the Chrome extens
 
 ## 21. Cross-Modal Contradiction Vector (Novel)
 
-A research-grade contribution additive to the already-documented Context-Gate Override (see [README-overall.md](../README-overall.md#novel-algorithmic-contributions)). The Context-Gate Override is a rule that fires on *one* known confusion (phone vs. reading) and discards the disagreement magnitude once applied. The **Cross-Modal Contradiction Vector (CMCV)** is a general, symmetric, per-frame disagreement statistic computed over **all** modality pairs (gaze, head-pose stability, ocular/PERCLOS, object-context, hand-action), retained as a first-class signal rather than averaged away.
+A research-grade contribution additive to the already-documented Context-Gate Override (see [README.md](../README.md#novel-algorithmic-contributions)). The Context-Gate Override is a rule that fires on *one* known confusion (phone vs. reading) and discards the disagreement magnitude once applied. The **Cross-Modal Contradiction Vector (CMCV)** is a general, symmetric, per-frame disagreement statistic computed over **all** modality pairs (gaze, head-pose stability, ocular/PERCLOS, object-context, hand-action), retained as a first-class signal rather than averaged away.
 
 **Algorithm** (`src/lib/contradiction-detector.ts`):
 
@@ -789,7 +789,7 @@ The *sign pattern* of disagreement is classified into an actionable taxonomy:
 - **Type checking**: `npm run typecheck` (`tsc --noEmit`, `strict: true`).
 - **Linting**: `npm run lint` (`eslint.config.mjs` — Next.js flat config, `next/core-web-vitals` + `next/typescript`). Previously no ESLint config existed at all; `next.config.ts` also previously set `typescript.ignoreBuildErrors: true` and `eslint.ignoreDuringBuilds: true`, silently letting type/lint errors ship to production — both flags have been removed, so `npm run build` now genuinely enforces both.
 - **Error boundaries**: `src/app/error.tsx` (client-side render errors) and `src/app/global-error.tsx` (root-layout failures) — previously an unhandled render error crashed the whole app with no fallback UI.
-- **CI**: `.github/workflows/ci.yml` runs `typecheck`, `lint`, `test` (Vitest 257 tests, plus the DACE fixture/evidence guards, see §24), `build`, and an informational `npm audit --audit-level=high` on every push/PR to `main`, path-filtered so a v2.0-only change doesn't trigger v1.0 jobs. See [README-overall.md §CI](../README-overall.md) for the full pipeline description shared with v2.0.
+- **CI**: `.github/workflows/ci.yml` runs `typecheck`, `lint`, `test` (Vitest 257 tests, plus the DACE fixture/evidence guards, see §24), `build`, and an informational `npm audit --audit-level=high` on every push/PR to `main`, path-filtered so a v2.0-only change doesn't trigger v1.0 jobs. See [README.md §CI](../README.md) for the full pipeline description shared with v2.0.
 
 ---
 

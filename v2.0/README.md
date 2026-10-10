@@ -555,7 +555,7 @@ python3 v2.0/evaluation/evaluate.py \
 
 ## 18. Performance Metrics
 
-> ⚠ **These are targets, not measured results** — see [README-overall.md §7](../README-overall.md#7-performance-metrics) for the full, current honesty banner. The table below was trained/tested entirely on the same synthetic AR(1) generator (train seed=42, test seed=43) — a circular evaluation, not a generalization test — which is why every score reads a suspiciously perfect **1.000**. No real, subject-disjoint test set has been evaluated yet. `evaluate.py`'s fabrication bug (see §17) has been fixed, but that only means it now correctly reports `SKIPPED` instead of a fake number — it does not mean these numbers are real.
+> ⚠ **These are targets, not measured results** — see [README.md §7](../README.md#7-performance-metrics) for the full, current honesty banner. The table below was trained/tested entirely on the same synthetic AR(1) generator (train seed=42, test seed=43) — a circular evaluation, not a generalization test — which is why every score reads a suspiciously perfect **1.000**. No real, subject-disjoint test set has been evaluated yet. `evaluate.py`'s fabrication bug (see §17) has been fixed, but that only means it now correctly reports `SKIPPED` instead of a fake number — it does not mean these numbers are real.
 
 Trained on 42,600 synthetic windows (AR(1) temporal autocorrelation). Tested on 3,000 independent windows drawn from the *same* synthetic distribution.
 
@@ -704,4 +704,4 @@ Implemented in `server/security.py`, `server/main.py`, `input/frame_source.py`; 
 - **Test suite**: see §17 for the lightweight-vs-full test tier split. Mypy's first pass also caught a real regression: `evaluation/evaluate.py` still unpacked `ClassroomDataset` iteration as a 2-tuple after the train/val-leakage fix (§23) changed every loader to yield 3-tuples `(window, label, group_id)` — would have crashed the moment real classroom evaluation ran. Fixed.
 - **Dependency pinning**: see §14.
 - **`pip-audit`**: runs against `server/requirements.txt` in CI.
-- **CI**: `.github/workflows/ci.yml` (shared file with v1.0, path-filtered) runs `ruff check`, `mypy` (informational), the lightweight pytest tier, and `pip-audit` on every push/PR to `main`. See [README-overall.md](../README-overall.md) for the full pipeline description.
+- **CI**: `.github/workflows/ci.yml` (shared file with v1.0, path-filtered) runs `ruff check`, `mypy` (informational), the lightweight pytest tier, and `pip-audit` on every push/PR to `main`. See [README.md](../README.md) for the full pipeline description.
