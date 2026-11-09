@@ -1,7 +1,10 @@
-# CognEn System Architecture — v1.0 Upgrade & v2.0 Design
+# AttentionTrackerOSS System Architecture
 
-> **Author**: Generated from deep codebase analysis of CognEn v1.0  
-> **Scope**: Single-user webcam (v1.0) → Multi-person CCTV (v2.0)
+> **Lead Developer & System Architect:** Hrishikesh Jha ([@hrishikeshjh](https://github.com/hrishikeshjh) · `hrishikeshjhapersonal@gmail.com`)  
+> **Repository:** [https://github.com/hrishikeshjh/AttentionTrackerOSS](https://github.com/hrishikeshjh/AttentionTrackerOSS)  
+> **Scope:** Browser-Native (v1.0) + CCTV Edge-Server (v2.0) + Cyber-Physical ESP32 Actuation Hub  
+
+![System Architecture](assets/system-architecture.svg)
 
 ---
 
@@ -18,6 +21,7 @@
 9. [End-to-End Inference Pipeline](#9-end-to-end-inference-pipeline)
 10. [Post-Upgrade: Correctness, Security & CI (Status Update)](#10-post-upgrade-correctness-security--ci-status-update)
 11. [DACE: Downward-Attention Context Engine (v1.0 only)](#11-dace-downward-attention-context-engine-v10-only)
+12. [Cyber-Physical System (CPS) & ESP32 Actuation Hub](#12-cyber-physical-system-cps--esp32-actuation-hub)
 
 ---
 
@@ -595,24 +599,33 @@ def analyze_posture(pose_keypoints):
 ## 8. Implementation Folder Structure
 
 ```
-CognEn-VCSir/
-├── v1.0/                          # EXISTING — maintained with upgrades
-│   ├── extension/                 # Chrome extension (KEPT)
+AttentionTrackerOSS/
+├── assets/                        # High-resolution architectural & pipeline diagrams
+│   ├── system-architecture.svg
+│   ├── vision-pipeline.svg
+│   ├── esp32-circuit-diagram.svg
+│   └── working-dashboard.jpg      # Production dashboard live capture
+├── esp32_relay_app/               # ✨ Cyber-Physical Actuation Hub (ESP32)
+│   ├── firmware/                  # Arduino & PlatformIO 4-channel relay firmware
+│   ├── python/                    # Hardware serial & HTTP bridge (server.py)
+│   └── web/                       # Standalone zero-dependency browser dashboard
+├── v1.0/                          # Client Web App + Chrome MV3 Extension
+│   ├── extension/                 # Chrome extension
 │   │   ├── lib/
 │   │   │   ├── face-api.min.js
-│   │   │   ├── ml-core.js        # 🔄 MODIFIED: add context-aware scoring
-│   │   │   └── object-detector.js # ✨ NEW: YOLOv8-nano ONNX wrapper
+│   │   │   ├── ml-core.js        # Context-aware scoring
+│   │   │   └── object-detector.js # YOLOv8-nano ONNX wrapper
 │   │   ├── background.js
 │   │   ├── content.js
 │   │   └── offscreen.js
 │   ├── src/
 │   │   ├── lib/
-│   │   │   ├── face-geometry.ts   # ✅ REUSED
-│   │   │   ├── ml-engine.ts      # 🔄 MODIFIED: context-aware scoring
-│   │   │   ├── analytics.ts      # ✅ REUSED
-│   │   │   ├── types.ts          # 🔄 MODIFIED: new fields
-│   │   │   ├── object-detector.ts # ✨ NEW: YOLOv8-nano browser wrapper
-│   │   │   ├── hand-tracker.ts    # ✨ NEW: MediaPipe Hands wrapper
+│   │   │   ├── face-geometry.ts   # Geometric landmark calculations
+│   │   │   ├── ml-engine.ts      # Multi-modal feature fusion & EMA
+│   │   │   ├── analytics.ts      # Session analytics & trend reporting
+│   │   │   ├── types.ts          # Standardized schemas
+│   │   │   ├── object-detector.ts # EfficientDet / YOLO wrapper
+│   │   │   ├── hand-tracker.ts    # MediaPipe Hands wrapper
 │   │   │   ├── temporal-classifier.ts # ✨ NEW: sliding window classifier
 │   │   │   ├── scoring/dace/      # DACE pure core (§11): no DOM, node-testable
 │   │   │   └── dace/              # DACE browser/stateful code (§11)
@@ -1054,3 +1067,28 @@ DACE as a whole (E/T/U, scheduler, UI) is v1.0 web app only; the Chrome extensio
 | D11 / U4 | Rule order and U4 definition | As in §11.6 |
 | Plan §6 | Feature mapping into `FEATURE_WEIGHTS` | As in §11.9 |
 | Absence | Whether absence should lower the score | DACE mode: no (current semantics kept). Legacy path: yes, `Idle` scored 0 through the EMA after a 3 s grace |
+
+---
+
+## 12. Cyber-Physical System (CPS) & ESP32 Actuation Hub
+
+The Cyber-Physical System extension links the biometric attention estimation pipeline directly to real-world electrical equipment and environmental actuators via an ESP32 microcontroller and a 4-channel optically isolated relay module.
+
+![ESP32 Circuit Diagram](assets/esp32-circuit-diagram.svg)
+
+### 12.1 Actuation Logic & Hardware Mappings
+
+The actuation hub evaluates the continuous attention metric $S_t$, PERCLOS rolling eye closure, fatigue slope $\beta$, and hand context to trigger active relay channels:
+
+$$\text{State Transition Rules:}$$
+$$\text{Relay 1 (Task Light / Alarm)} \Longleftrightarrow (\text{PERCLOS} > 0.20) \lor (\text{EAR} < 0.21 \text{ for } > 1.5\text{s})$$
+$$\text{Relay 2 (Ventilation / AC)} \Longleftrightarrow (\text{OLS Slope } \beta < -0.4 \land R^2 > 0.35)$$
+$$\text{Relay 3 (Circulator / Interlock)} \Longleftrightarrow (\text{Fidget Score} > 15^\circ/\text{s} \text{ or Safety Cut})$$
+$$\text{Relay 4 (Focus Beacon / Strobe)} \Longleftrightarrow (\text{Context-Gate} = \text{"Phone Distraction" for } > 3\text{s})$$
+
+### 12.2 Fail-Safe Hardware Guarantees
+
+1. **Optical Isolation:** By removing the `VCC-JD-VCC` jumper on the relay board, electrical noise and high-inductive flyback currents are completely isolated from the ESP32 microcontroller logic.
+2. **Active-Low Fail-Safe:** Default reset state keeps all GPIOs high ($3.3\text{V}$), keeping relay contacts open (de-energized) during boot, flashing, or unexpected resets.
+3. **Watchdog Timer & Millis Timeout:** Relays pulsed for alert cycles auto-expire via non-blocking hardware timer loops without blocking incoming sensor stream packets.
+

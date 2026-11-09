@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use AttentionTrackerOSS in your research or applications, please cite it as below."
+title: "AttentionTrackerOSS: Open-Source Real-Time Cognitive Engagement and Cyber-Physical Attention Tracking Platform"
+authors:
+  - family-names: "Jha"
+    given-names: "Hrishikesh"
+    email: "hrishikeshjhapersonal@gmail.com"
+    affiliation: "Independent Researcher & Developer"
+version: "2.1.0"
+date-released: "2026-11-09"
+license: "MIT"
+repository-code: "https://github.com/hrishikeshjh/AttentionTrackerOSS"
+keywords:
+  - "cognitive engagement"
+  - "attention tracking"
+  - "computer vision"
+  - "facial landmarks"
+  - "head pose estimation"
+  - "cyber-physical systems"
+  - "esp32"
+  - "edge computing"

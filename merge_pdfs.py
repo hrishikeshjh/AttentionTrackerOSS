@@ -434,9 +434,9 @@ def main():
 
     # Set PDF metadata
     writer.add_metadata({
-        "/Title":   "CognEn-VCSir Complete Documentation",
-        "/Author":  "CognEn-VCSir",
-        "/Subject": "Overall + Working Diagram + v1.0 + v2.0 Documentation",
+        "/Title":   "AttentionTrackerOSS Complete Documentation",
+        "/Author":  "Hrishikesh Jha",
+        "/Subject": "AttentionTrackerOSS Overall + Architecture + v1.0 + v2.0 + ESP32 Documentation",
         "/Creator": "merge_pdfs.py",
     })
 

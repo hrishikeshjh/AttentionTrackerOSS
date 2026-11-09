@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CognEn — Relay Control Hub</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Cupertino Header -->
+    <header class="header-bar">
+      <div class="brand-section">
+        <span class="brand-badge">TIH/RP/20</span>
+        <h1 class="brand-title">CognEn Relay Hub</h1>
+      </div>
+
+      <!-- Segmented Mode Control -->
+      <nav class="segmented-control" id="modeSelector">
+        <button class="segment-btn active" data-mode="proto">Study Desk</button>
+        <button class="segment-btn" data-mode="truck">Truck & Fleet</button>
+        <button class="segment-btn" data-mode="exam">Exam Hall</button>
+        <button class="segment-btn" data-mode="cleanroom">Cleanroom</button>
+      </nav>
+
+      <!-- Hardware Connectivity -->
+      <div class="connection-tools">
+        <button id="btnSerial" class="pill-btn">
+          <span class="dot" id="dotSerial"></span>
+          <span id="labelSerial">Connect USB</span>
+        </button>
+
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <input type="text" id="inputIp" class="ip-input" placeholder="192.168.0.109" value="192.168.0.109">
+          <button id="btnWifi" class="pill-btn">Wi-Fi</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Dashboard Grid -->
+    <main class="dashboard-grid">
+      <!-- Left: Viewfinder & Metrics -->
+      <section class="camera-card">
+        <div class="viewfinder-wrapper">
+          <video id="videoElement" autoplay playsinline muted></video>
+          <canvas id="overlayCanvas"></canvas>
+
+          <!-- Floating HUD Top -->
+          <div class="hud-top">
+            <div class="hud-pill">
+              <span class="dot green" id="hudStateDot"></span>
+              <span id="hudStateLabel">INITIALIZING CAMERA...</span>
+            </div>
+            <div class="hud-pill">
+              <span>SCORE</span>
+              <span id="hudScoreVal" style="color: var(--apple-green); font-weight: 700;">--</span>
+            </div>
+          </div>
+
+          <!-- Floating HUD Bottom -->
+          <div class="hud-bottom">
+            <div class="hud-pill" style="font-size: 10px;">
+              <span id="hudFps">0 FPS</span>
+              <span style="opacity: 0.4;">|</span>
+              <span id="hudLatency">0 ms</span>
+            </div>
+            <div class="hud-pill" style="font-size: 10px;">
+              <span id="hudFatigueSlope">OLS Nominal</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 Core Metrics Strip -->
+        <div class="metrics-strip">
+          <div class="metric-tile">
+            <div class="metric-label">Eye Openness (EAR)</div>
+            <div class="metric-value" id="valEar">--</div>
+            <div class="metric-sub" id="subEar">Threshold: 0.21</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-label">PERCLOS (60s)</div>
+            <div class="metric-value" id="valPerclos">--%</div>
+            <div class="metric-sub" id="subPerclos">Alert: &lt; 15%</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-label">Head Pitch / Yaw</div>
+            <div class="metric-value" id="valPose">--° / --°</div>
+            <div class="metric-sub" id="subPose">Pitch: Down (+)</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-label">Fidget Score</div>
+            <div class="metric-value" id="valFidget">--</div>
+            <div class="metric-sub" id="subFidget">Stability: --</div>
+          </div>
+        </div>
+
+        <!-- State Simulation Bar for Immediate Testing -->
+        <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 6px 0;">
+          <span style="font-size: 11px; color: var(--text-tertiary); font-weight: 500;">TEST INJECTION:</span>
+          <div style="display: flex; gap: 6px;">
+            <button class="segment-btn" id="simPhone" style="background: var(--bg-tertiary);">Simulate Phone</button>
+            <button class="segment-btn" id="simBook" style="background: var(--bg-tertiary);">Simulate Book</button>
+            <button class="segment-btn" id="simDrowsy" style="background: var(--bg-tertiary);">Simulate Drowsy</button>
+            <button class="segment-btn" id="simReset" style="background: var(--bg-tertiary);">Reset</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: 4-Channel Relay Control Panel -->
+      <aside class="relay-panel">
+        <div class="panel-header">
+          <span class="panel-title">4-Channel Relay Outputs</span>
+          <span class="mode-badge" id="currentModeBadge">PROTOTYPE</span>
+        </div>
+
+        <!-- 4 Relay Cards -->
+        <div class="relay-cards-list" id="relayCardsContainer">
+          <!-- Dynamically populated from modes.js -->
+        </div>
+
+        <!-- Hardware & Status Drawer -->
+        <div class="status-card">
+          <div class="status-row">
+            <span class="status-key">Active Transport</span>
+            <span class="status-val" id="valTransport">Simulation (Loopback)</span>
+          </div>
+          <div class="status-row">
+            <span class="status-key">Trigger Reason</span>
+            <span class="status-val" id="valReason" style="font-size: 11px; max-width: 200px; text-align: right; color: var(--apple-blue);">Normal</span>
+          </div>
+          
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+            <span style="font-size: 10px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase;">Hardware TX Stream</span>
+            <button id="btnCycleAll" class="segment-btn" style="font-size: 10px; padding: 2px 8px;">Pulse All Relays</button>
+          </div>
+          
+          <div class="console-box" id="consoleBox">
+            <span class="console-entry">[SYSTEM] CognEn Relay Hub Initialized.</span>
+            <span class="console-entry">[ESP32] Ready for Wired (WebSerial) or OTA (Wi-Fi).</span>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Main Application Script (ES Module) -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,10 +1,48 @@
-# CognEn — Cognitive Engagement Analyzer
+# AttentionTrackerOSS — Open-Source Cognitive Engagement & Cyber-Physical Attention Tracking Platform
 
-> **Consolidated Master Documentation**
-> CognEn is a real-time cognitive engagement monitoring system. It ships as two versioned sub-systems that share the same underlying Machine Learning core:
->
-> - **[v1.0 (Browser Version)](v1.0/README.md)**: Single-student, webcam-based Next.js web application.
-> - **[v2.0 (Server Version)](v2.0/README.md)**: Multi-person, CCTV-based Python FastAPI server.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10 - 3.12"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-20%2B%20%7C%20Next.js%2015-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js 20+"></a>
+  <a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI"></a>
+  <a href="esp32_relay_app/README.md"><img src="https://img.shields.io/badge/Hardware-ESP32%20Relay%20CPS-E7352C?style=for-the-badge&logo=espressif&logoColor=white" alt="ESP32 CPS"></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-Welcome-brightgreen.svg?style=for-the-badge" alt="PRs Welcome"></a>
+</p>
+
+> **Lead Developer & System Architect:** **Hrishikesh Jha** ([@hrishikeshjh](https://github.com/hrishikeshjh) · `hrishikeshjhapersonal@gmail.com`)  
+> **Repository:** [https://github.com/hrishikeshjh/AttentionTrackerOSS](https://github.com/hrishikeshjh/AttentionTrackerOSS)  
+> **Project Heritage:** `TIH/RP/20` (Funded by iHUB Divyasampark, TIH IIT Roorkee under NM-ICPS; PIs: Prof. Samiran Chattopadhyay & Prof. Dr. Mourani Sinha)
+
+---
+
+## Live System Demonstration
+
+Below is a live production capture of **AttentionTrackerOSS** running during an interactive evaluation session with iHUB Divyasampark:
+
+<p align="center">
+  <img src="assets/working-dashboard.jpg" alt="AttentionTrackerOSS Live Production Dashboard" width="95%" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);" />
+</p>
+
+> **Live Telemetry & Analytics Highlighted Above:**
+> - **Real-Time Attention Score:** `89% Live` / `90% Session Average` computed via Exponential Moving Average ($\alpha = 0.15$).
+> - **Ocular Biometrics:** Eye Aspect Ratio (`EAR: 0.29`), `PERCLOS: 0.00%`, sub-pixel iris fixation tracking.
+> - **3D Head Pose SolvePnP:** Yaw `5.3°`, Pitch `19.1°`, Roll `-0.9°`, with Head Stability at `99.59%`.
+> - **Fatigue & Fidget Kinetics:** Fatigue Index `30.00%` (via OLS slope regression), Fidget Score `3.82%`.
+> - **Interpretable ML Insights:** Real-time feature importance attribution (EAR `+601.6`, PERCLOS `+600.0`, Head Stability `+595.4`, Gaze `+456.7`).
+> - **Automated Reporting:** Real-time session export to pedagogical PDF summaries with Google Gemini AI.
+
+---
+
+## System Architecture at a Glance
+
+AttentionTrackerOSS is organized into **three interconnected subsystems** sharing a mathematically synchronized ML core:
+
+1. **[v1.0 (Browser-Native Web App & Chrome MV3 Extension)](v1.0/README.md)**: Client-side single-user webcam analysis powered by Next.js 15, Turbopack, face-api.js, and ONNX Runtime Web WASM.
+2. **[v2.0 (High-Throughput CCTV & Edge Server)](v2.0/README.md)**: Multi-person classroom/hall monitoring server built on FastAPI, YOLOv8-pose, and ByteTrack 16.
+3. **[Cyber-Physical Actuation Hub (ESP32 Relay App)](esp32_relay_app/README.md)**: Microcontroller hardware bridge driving a 4-channel optocoupled relay module for environmental feedback.
+
+![System Architecture](assets/system-architecture.svg)
+
 
 ---
 
@@ -186,6 +224,8 @@ Supporting (not counted) additions: gaze-corrected eye openness/PERCLOS, hand-la
 
 ## 3. Architecture Diagrams
 
+![End-to-End Vision Pipeline](assets/vision-pipeline.svg)
+
 ### 3.1 v1.0 — Browser Pipeline
 
 ```mermaid
@@ -234,6 +274,27 @@ flowchart TD
     BL --> RA[Room Analytics\nper-seat occupancy\nroom attention mean]
     RA --> WS[WebSocket\n5 Hz push\nto Dashboard]
 ```
+
+### 3.3 Cyber-Physical Actuation Hub (ESP32)
+
+```mermaid
+flowchart LR
+    A[Attention Telemetry\n5 Hz Cognitive State] --> B{Trigger Evaluator}
+    B -->|PERCLOS > 0.20| R1[Relay 1: Task Light / Buzzer]
+    B -->|Fatigue β < -0.4| R2[Relay 2: Ventilation Fan / AC]
+    B -->|Fidget > 15°/s| R3[Relay 3: Desk Circulator / Lock]
+    B -->|Phone > 3s| R4[Relay 4: Focus Beacon / Strobe]
+
+    subgraph ESP32 Hardware
+        R1 & R2 & R3 & R4 --> C[GPIO 18 / 19 / 21 / 22]
+        C --> D[Optical Isolation\nJD-VCC 5V External]
+        D --> E[Relay Contacts\nCOM / NO / NC]
+    end
+
+    E --> F[Physical Devices & Loads]
+```
+
+![ESP32 Hardware Schematic](assets/esp32-circuit-diagram.svg)
 
 ---
 
@@ -318,14 +379,29 @@ The target hybrid dataset comprises **55,100 annotated temporal sequences** (15 
 ## 6. Repository Structure
 
 ```
-CognEn-VCSir/
+AttentionTrackerOSS/
+├── assets/                      # High-resolution architectural, pipeline & circuit diagrams
+│   ├── system-architecture.svg  # Multi-tier system architecture
+│   ├── vision-pipeline.svg      # Computer vision & attention scoring pipeline
+│   ├── esp32-circuit-diagram.svg# ESP32 relay actuation schematic
+│   └── working-dashboard.jpg    # Production dashboard live screen capture
+├── esp32_relay_app/             # Cyber-Physical Relay Control Hub (ESP32)
+│   ├── firmware/                # Arduino (.ino) & PlatformIO firmware for 4-channel relay
+│   ├── python/                  # Native serial bridge & HTTP server (:8080)
+│   ├── web/                     # Browser-based CPS control dashboard
+│   ├── run.sh                   # Instant launch script
+│   └── README.md                # Wiring, pinouts, modes & protocol docs
 ├── ARCHITECTURE.md              # System design source of truth (see §10 for post-upgrade status)
-├── README.md                    # This consolidated master file
-├── .github/workflows/ci.yml     # Shared CI pipeline for v1.0 + v2.0 (see §15); also dependabot.yml, gitleaks.toml, ci/requirements-*.txt
-├── shared/fixtures/             # Generated cross-language fixtures (encode13, encode15_v2, cmcv) + their generators
-├── docs/proposals/evidence/     # Pitch-defect evidence (pitch_sim.py, legacy_pitch_constants.json)
+├── README.md                    # Consolidated master documentation
+├── LICENSE                      # MIT Open Source License
+├── CONTRIBUTING.md               # Guidelines for contributors
+├── CODE_OF_CONDUCT.md            # Contributor Covenant Code of Conduct
+├── SECURITY.md                  # Vulnerability disclosure policy
+├── CITATION.cff                 # Academic citation specification
+├── .github/                     # Workflows (ci.yml), templates, gitleaks & dependabot configs
+├── shared/fixtures/             # Generated cross-language fixtures (encode13, encode15_v2, cmcv)
 │
-├── v1.0/                        # Next.js web app + Chrome Extension
+├── v1.0/                        # Next.js web app + Chrome MV3 Extension
 │   ├── src/
 │   │   ├── lib/
 │   │   │   ├── scoring/              # Single-source-of-truth scoring core (see v1.0 README §20)
@@ -498,6 +574,38 @@ For detailed Chrome Extension setup, view the [v1.0 README](v1.0/README.md).
    Requires Python 3.10-3.12. For a 15 FPS source set `COGNEN_PROCESS_EVERY_N=3` so analysis runs at the 5 Hz cadence the model was trained on. The full ML stack has not been smoke-tested on real video or a GPU.
 
 For full REST API and WebSocket documentation, view the [v2.0 README](v2.0/README.md).
+
+---
+
+## 9.5 Build and Run — Cyber-Physical Actuation Hub (ESP32)
+
+The Cyber-Physical Relay Hub bridges cognitive engagement telemetry to physical environment actuators (lighting, ventilation fans, alarm buzzers, safety interlocks).
+
+### Step 1: Flash ESP32 Firmware
+- **Arduino IDE**: Open `esp32_relay_app/firmware/esp32_relay_controller/esp32_relay_controller.ino`, select `ESP32 Dev Module`, and click **Upload**.
+- **PlatformIO**:
+  ```bash
+  cd esp32_relay_app/firmware/pio_project
+  pio run -t upload
+  ```
+
+### Step 2: Launch Hardware Serial Bridge & Web Dashboard
+```bash
+cd esp32_relay_app
+bash run.sh
+```
+Or run the Python bridge manually:
+```bash
+python3 python/server.py 8080
+```
+Open **`http://localhost:8080`** in Chrome or Edge.
+
+### Step 3: Hardware Diagnostics
+```bash
+# Automated 4-channel relay cycle test
+python3 python/test_relay.py
+```
+For detailed wiring schematics, optical isolation jumpers, and pinouts, see [`esp32_relay_app/README.md`](esp32_relay_app/README.md).
 
 ---
 
@@ -722,3 +830,42 @@ If the goal is one real, defensible published contribution as fast as possible: 
 Hygiene: every action is pinned to a full commit SHA (tag in a comment), the runner is `ubuntu-24.04` (not `ubuntu-latest`), every job has a timeout and `contents: read` permissions, superseded runs are cancelled except on `main`, and Dependabot (`.github/dependabot.yml`) opens weekly grouped PRs against `dev` with a 14-day cooldown. CI tool pins live in `.github/ci/requirements-*.txt`.
 
 **Dependency hygiene**: `v1.0` `npm audit` went from 107 findings (6 critical, 22 high) to **0** (see [v1.0 README §23](v1.0/README.md#23-security--dependency-hygiene)). `v2.0/server/requirements.txt` is pinned with `==` on a numpy 2.x stack that resolves (the old pin set did not), for Python 3.10-3.12; the default Linux torch wheel is a CUDA 13 build, so use the CPU index on CPU-only servers.
+
+---
+
+## 16. Open Source Governance, Attribution & Citation
+
+### Developer & Maintainer
+- **Lead Developer & System Architect:** **Hrishikesh Jha** ([@hrishikeshjh](https://github.com/hrishikeshjh) · `hrishikeshjhapersonal@gmail.com`)
+- **Repository:** [https://github.com/hrishikeshjh/AttentionTrackerOSS](https://github.com/hrishikeshjh/AttentionTrackerOSS)
+
+### Project Heritage & Acknowledgments
+- **Project Reference:** `TIH/RP/20` (Funded by iHUB Divyasampark, TIH IIT Roorkee under NM-ICPS)
+- **Principal Investigators:** Prof. Samiran Chattopadhyay & Prof. Dr. Mourani Sinha
+
+### Community & Contributing
+We welcome contributions from the open source community! Please refer to our governance guidelines:
+- [Contributing Guidelines](CONTRIBUTING.md)
+- [Code of Conduct (Contributor Covenant v2.1)](CODE_OF_CONDUCT.md)
+- [Security Policy & Disclosures](SECURITY.md)
+
+### License
+This repository is licensed under the **[MIT License](LICENSE)**:
+```
+Copyright (c) 2026 Hrishikesh Jha <hrishikeshjhapersonal@gmail.com>
+```
+
+### Citation
+If you use AttentionTrackerOSS in your academic research or engineering applications, please cite as:
+```bibtex
+@software{jha2026attentiontrackeross,
+  author       = {Jha, Hrishikesh},
+  title        = {AttentionTrackerOSS: Open-Source Real-Time Cognitive Engagement and Cyber-Physical Attention Tracking Platform},
+  year         = {2026},
+  publisher    = {GitHub},
+  journal      = {GitHub repository},
+  howpublished = {\url{https://github.com/hrishikeshjh/AttentionTrackerOSS}},
+  version      = {2.1.0}
+}
+```
+

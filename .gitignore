@@ -1,30 +1,34 @@
-.next/
-*.claude/
-.claude/
-.env/
-.env.*
+# Virtual environments and dependencies
+.venv/
+node_modules/
 
-__pycache__
+# PlatformIO & build artifacts
+.pio/
+.next/
+.turbo/
+dist/
+build/
+*.pyc
+__pycache__/
 .DS_Store
 
-# Model weights and tasks
+# Model weights and tasks (downloaded via scripts/setup-models.sh or download_models.py)
 *.pt
 *.onnx
 *.task
-
-# Virtual environments
-.venv/
-
-# Claude Code notes
-CLAUDE.md
-
-fixes/
-DACE-IMPLEMENTATION-PLAN.md
-
-# DACE model assets (downloaded/copied by v1.0/scripts/setup-models.sh; verified by scripts/models.sha256)
 *.tflite
 v1.0/public/mediapipe/wasm/
 v1.0/public/onnx/*.wasm
 v1.0/public/onnx/*.mjs
 
-node_modules/
+# Environment variables & secrets (placeholders in .env.example)
+.env/
+.env.*
+!.env.example
+
+# Local editor & agent notes
+*.claude/
+.claude/
+CLAUDE.md
+fixes/
+DACE-IMPLEMENTATION-PLAN.md

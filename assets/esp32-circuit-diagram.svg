@@ -1,0 +1,195 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 680" width="100%" height="100%" style="background-color: #0d1117; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <defs>
+    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffa657" />
+      <stop offset="100%" stop-color="#d29922" />
+    </linearGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#000000" flood-opacity="0.5" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#58a6ff" />
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ffa657" />
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#3fb950" />
+    </marker>
+  </defs>
+
+  <!-- Title & Subtitle -->
+  <text x="550" y="38" text-anchor="middle" fill="#f0f6fc" font-size="22" font-weight="700">ESP32 Cyber-Physical 4-Channel Relay Actuation Circuit</text>
+  <text x="550" y="62" text-anchor="middle" fill="#8b949e" font-size="13">Optically Isolated 5V Relay Interfacing with Active-LOW Logic &amp; Dual Power Isolation</text>
+
+  <!-- 1. HOST PC & USB -->
+  <g transform="translate(35, 90)" filter="url(#shadow)">
+    <rect width="180" height="240" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5" />
+    <path d="M 0 10 Q 0 0 10 0 L 170 0 Q 180 0 180 10 L 180 34 L 0 34 Z" fill="#58a6ff" fill-opacity="0.25" />
+    <text x="90" y="23" fill="#58a6ff" font-size="13" font-weight="700" text-anchor="middle">Host Computer</text>
+
+    <rect x="15" y="48" width="150" height="55" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="68" fill="#e6edf3" font-size="11" font-weight="600">CognEn Engine</text>
+    <text x="25" y="85" fill="#8b949e" font-size="9">Attention Scoring Loop</text>
+    <text x="25" y="96" fill="#8b949e" font-size="9">5 Hz Decision Tick</text>
+
+    <rect x="15" y="115" width="150" height="55" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="135" fill="#e6edf3" font-size="11" font-weight="600">Python Serial Bridge</text>
+    <text x="25" y="152" fill="#ffa657" font-size="9">115200 Baud /dev/ttyACM0</text>
+    <text x="25" y="163" fill="#8b949e" font-size="9">or HTTP REST :8080</text>
+
+    <rect x="15" y="180" width="150" height="45" rx="6" fill="#1f6feb" fill-opacity="0.15" stroke="#1f6feb" />
+    <text x="25" y="198" fill="#58a6ff" font-size="10" font-weight="600">USB Type-C Cable</text>
+    <text x="25" y="213" fill="#8b949e" font-size="9">Power &amp; Serial TX/RX</text>
+  </g>
+
+  <!-- 2. EXTERNAL 5V DC SUPPLY -->
+  <g transform="translate(35, 360)" filter="url(#shadow)">
+    <rect width="180" height="180" rx="10" fill="#161b22" stroke="#da3633" stroke-width="1.5" />
+    <path d="M 0 10 Q 0 0 10 0 L 170 0 Q 180 0 180 10 L 180 34 L 0 34 Z" fill="#da3633" fill-opacity="0.25" />
+    <text x="90" y="23" fill="#f85149" font-size="13" font-weight="700" text-anchor="middle">External 5V 2A DC Supply</text>
+
+    <text x="20" y="60" fill="#f0f6fc" font-size="11" font-weight="600">Isolated Power Rail</text>
+    <text x="20" y="78" fill="#8b949e" font-size="9">Powers Relay Coils directly</text>
+    <text x="20" y="93" fill="#8b949e" font-size="9">Prevents ESP32 brownouts</text>
+    <text x="20" y="108" fill="#8b949e" font-size="9">&amp; inductive kickback noise.</text>
+
+    <rect x="15" y="125" width="150" height="42" rx="6" fill="#da3633" fill-opacity="0.15" stroke="#da3633" />
+    <text x="25" y="143" fill="#f85149" font-size="10" font-weight="700">(+) 5V ──> Relay JD-VCC</text>
+    <text x="25" y="157" fill="#8b949e" font-size="9">(–) GND ─> Relay Coil GND</text>
+  </g>
+
+  <!-- 3. ESP32 MICROCONTROLLER -->
+  <g transform="translate(265, 90)" filter="url(#shadow)">
+    <rect width="210" height="450" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5" />
+    <path d="M 0 10 Q 0 0 10 0 L 200 0 Q 210 0 210 10 L 210 34 L 0 34 Z" fill="#3fb950" fill-opacity="0.25" />
+    <text x="105" y="23" fill="#3fb950" font-size="13" font-weight="700" text-anchor="middle">ESP32 DevKit V1 Board</text>
+
+    <!-- Pins Table -->
+    <rect x="15" y="50" width="180" height="60" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="72" fill="#3fb950" font-size="11" font-weight="700">GPIO 18 (D18)</text>
+    <text x="25" y="88" fill="#8b949e" font-size="9">Relay IN 1 Control</text>
+    <text x="25" y="100" fill="#ffa657" font-size="9">Active-LOW Safe Logic</text>
+
+    <rect x="15" y="120" width="180" height="60" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="142" fill="#3fb950" font-size="11" font-weight="700">GPIO 19 (D19)</text>
+    <text x="25" y="158" fill="#8b949e" font-size="9">Relay IN 2 Control</text>
+    <text x="25" y="170" fill="#ffa657" font-size="9">Active-LOW Safe Logic</text>
+
+    <rect x="15" y="190" width="180" height="60" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="212" fill="#3fb950" font-size="11" font-weight="700">GPIO 21 (D21)</text>
+    <text x="25" y="228" fill="#8b949e" font-size="9">Relay IN 3 Control</text>
+    <text x="25" y="240" fill="#ffa657" font-size="9">Active-LOW Safe Logic</text>
+
+    <rect x="15" y="260" width="180" height="60" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="282" fill="#3fb950" font-size="11" font-weight="700">GPIO 22 (D22)</text>
+    <text x="25" y="298" fill="#8b949e" font-size="9">Relay IN 4 Control</text>
+    <text x="25" y="310" fill="#ffa657" font-size="9">Active-LOW Safe Logic</text>
+
+    <rect x="15" y="330" width="180" height="50" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="350" fill="#58a6ff" font-size="11" font-weight="700">VCC (3.3V or 5V)</text>
+    <text x="25" y="367" fill="#8b949e" font-size="9">──> Optocoupler VCC</text>
+
+    <rect x="15" y="390" width="180" height="48" rx="6" fill="#238636" fill-opacity="0.15" stroke="#238636" />
+    <text x="25" y="410" fill="#3fb950" font-size="10" font-weight="600">Dual Core Xtensa 240MHz</text>
+    <text x="25" y="426" fill="#8b949e" font-size="9">Wi-Fi STA/AP + HW UART</text>
+  </g>
+
+  <!-- 4. 4-CHANNEL RELAY MODULE -->
+  <g transform="translate(530, 90)" filter="url(#shadow)">
+    <rect width="230" height="450" rx="10" fill="#161b22" stroke="#d29922" stroke-width="1.5" />
+    <path d="M 0 10 Q 0 0 10 0 L 220 0 Q 230 0 230 10 L 230 34 L 0 34 Z" fill="#d29922" fill-opacity="0.25" />
+    <text x="115" y="23" fill="#ffa657" font-size="13" font-weight="700" text-anchor="middle">4-Channel Relay (Optocoupled)</text>
+
+    <!-- Header Jumper Note -->
+    <rect x="15" y="45" width="200" height="40" rx="6" fill="#21262d" stroke="#ffa657" stroke-width="1" />
+    <text x="25" y="62" fill="#ffa657" font-size="10" font-weight="700">Jumper REMOVED (Isolation):</text>
+    <text x="25" y="76" fill="#8b949e" font-size="9">VCC = ESP32 Logic • JD-VCC = Ext 5V</text>
+
+    <!-- Relay 1 -->
+    <rect x="15" y="95" width="200" height="75" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="115" fill="#f0f6fc" font-size="11" font-weight="700">Relay 1 (K1) — Task Alert</text>
+    <text x="25" y="132" fill="#58a6ff" font-size="9">Input: IN 1 • Opto LED</text>
+    <text x="25" y="147" fill="#8b949e" font-size="9">Contacts: COM1, NO1, NC1</text>
+    <text x="25" y="160" fill="#8b949e" font-size="9">Rating: 10A 250VAC / 30VDC</text>
+
+    <!-- Relay 2 -->
+    <rect x="15" y="180" width="200" height="75" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="200" fill="#f0f6fc" font-size="11" font-weight="700">Relay 2 (K2) — Ventilation</text>
+    <text x="25" y="217" fill="#3fb950" font-size="9">Input: IN 2 • Opto LED</text>
+    <text x="25" y="232" fill="#8b949e" font-size="9">Contacts: COM2, NO2, NC2</text>
+    <text x="25" y="245" fill="#8b949e" font-size="9">Rating: 10A 250VAC / 30VDC</text>
+
+    <!-- Relay 3 -->
+    <rect x="15" y="265" width="200" height="75" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="285" fill="#f0f6fc" font-size="11" font-weight="700">Relay 3 (K3) — Circulator/Lock</text>
+    <text x="25" y="302" fill="#bc8cff" font-size="9">Input: IN 3 • Opto LED</text>
+    <text x="25" y="317" fill="#8b949e" font-size="9">Contacts: COM3, NO3, NC3</text>
+    <text x="25" y="330" fill="#8b949e" font-size="9">Rating: 10A 250VAC / 30VDC</text>
+
+    <!-- Relay 4 -->
+    <rect x="15" y="350" width="200" height="75" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="370" fill="#f0f6fc" font-size="11" font-weight="700">Relay 4 (K4) — Focus Beacon</text>
+    <text x="25" y="387" fill="#ffa657" font-size="9">Input: IN 4 • Opto LED</text>
+    <text x="25" y="402" fill="#8b949e" font-size="9">Contacts: COM4, NO4, NC4</text>
+    <text x="25" y="415" fill="#8b949e" font-size="9">Rating: 10A 250VAC / 30VDC</text>
+  </g>
+
+  <!-- 5. ACTUATED PHYSICAL TARGETS (LOADS) -->
+  <g transform="translate(810, 90)" filter="url(#shadow)">
+    <rect width="250" height="450" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5" />
+    <path d="M 0 10 Q 0 0 10 0 L 240 0 Q 250 0 250 10 L 250 34 L 0 34 Z" fill="#bc8cff" fill-opacity="0.25" />
+    <text x="125" y="23" fill="#bc8cff" font-size="13" font-weight="700" text-anchor="middle">Physical Actuators &amp; Loads</text>
+
+    <!-- Load 1 -->
+    <rect x="15" y="55" width="220" height="85" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="78" fill="#58a6ff" font-size="11" font-weight="700">CH 1: Task Lighting / Alarm</text>
+    <text x="25" y="96" fill="#e6edf3" font-size="10">• Proto: LED Desk Task Lamp (Eye Strain)</text>
+    <text x="25" y="111" fill="#ffa657" font-size="10">• Fleet: Cabin Buzzer &amp; Haptic Motor</text>
+    <text x="25" y="126" fill="#8b949e" font-size="9">Trigger: PERCLOS &gt; 0.20 or Blink Drop</text>
+
+    <!-- Load 2 -->
+    <rect x="15" y="150" width="220" height="85" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="173" fill="#3fb950" font-size="11" font-weight="700">CH 2: Ventilation Fan / AC</text>
+    <text x="25" y="191" fill="#e6edf3" font-size="10">• Proto: 12V High-CFM Exhaust Fan</text>
+    <text x="25" y="206" fill="#ffa657" font-size="10">• Fleet: AC Cold Air Blast (Microsleep)</text>
+    <text x="25" y="221" fill="#8b949e" font-size="9">Trigger: OLS Fatigue Slope β &lt; -0.4</text>
+
+    <!-- Load 3 -->
+    <rect x="15" y="245" width="220" height="85" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="268" fill="#bc8cff" font-size="11" font-weight="700">CH 3: Circulator / Machine Lock</text>
+    <text x="25" y="286" fill="#e6edf3" font-size="10">• Proto: Thermal Circulator Fan</text>
+    <text x="25" y="301" fill="#ffa657" font-size="10">• Fleet: Safety Throttle Interlock Cut</text>
+    <text x="25" y="316" fill="#8b949e" font-size="9">Trigger: High Fidget Restlessness</text>
+
+    <!-- Load 4 -->
+    <rect x="15" y="340" width="220" height="85" rx="6" fill="#21262d" stroke="#30363d" />
+    <text x="25" y="363" fill="#ffa657" font-size="11" font-weight="700">CH 4: Focus Beacon / Hazard Strobe</text>
+    <text x="25" y="381" fill="#e6edf3" font-size="10">• Proto: Focus Strobe Indicator</text>
+    <text x="25" y="396" fill="#ffa657" font-size="10">• Fleet: Roof Hazard Beacon / SOS Flash</text>
+    <text x="25" y="411" fill="#8b949e" font-size="9">Trigger: Sustained Phone Distraction</text>
+  </g>
+
+  <!-- Connectors -->
+  <!-- Host to ESP32 -->
+  <path d="M 215 210 L 265 210" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" />
+  <text x="240" y="200" fill="#58a6ff" font-size="8" text-anchor="middle">USB</text>
+
+  <!-- Power Supply to Relay JD-VCC -->
+  <path d="M 215 450 L 530 450" stroke="#da3633" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#arrow)" />
+  <text x="350" y="442" fill="#f85149" font-size="9">Isolated 5V Power (JD-VCC / GND)</text>
+
+  <!-- ESP32 to Relay (4 channels) -->
+  <path d="M 475 220 L 530 220" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+  <path d="M 475 280 L 530 280" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+  <text x="502" y="210" fill="#3fb950" font-size="8" text-anchor="middle">GPIOs</text>
+
+  <!-- Relay to Actuators -->
+  <path d="M 760 135 L 810 135" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)" />
+  <path d="M 760 220 L 810 220" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowGreen)" />
+  <path d="M 760 305 L 810 305" stroke="#bc8cff" stroke-width="2" marker-end="url(#arrow)" />
+  <path d="M 760 390 L 810 390" stroke="#ffa657" stroke-width="2" marker-end="url(#arrowAmber)" />
+
+  <!-- Footer -->
+  <text x="550" y="665" text-anchor="middle" fill="#8b949e" font-size="11">AttentionTrackerOSS Cyber-Physical Actuation Hub • Hardware Lead: Hrishikesh Jha (@hrishikeshjh)</text>
+</svg>

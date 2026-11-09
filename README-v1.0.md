@@ -1,9 +1,9 @@
-# CognEn v1.0 — Cognitive Engagement Analyzer (Browser)
+# AttentionTrackerOSS v1.0 — Browser-Native Cognitive Engagement Analyzer
 
-> Root-level copy of [`v1.0/README.md`](v1.0/README.md), kept identical in content; paths such as `src/...`, `scripts/...` and `tests/...` are relative to `v1.0/`. Edit `v1.0/README.md` and regenerate this copy.
-
-> **Single-student, webcam-based real-time attention monitoring**
-> For the multi-person CCTV server version, see **[v2.0 README](v2.0/README.md)**.
+> **Lead Developer & System Architect:** **Hrishikesh Jha** ([@hrishikeshjh](https://github.com/hrishikeshjh) · `hrishikeshjhapersonal@gmail.com`)  
+> **Repository:** [AttentionTrackerOSS](https://github.com/hrishikeshjh/AttentionTrackerOSS)  
+> **Subsystem:** Single-student, webcam-based real-time attention monitoring (Next.js 15 + Chrome MV3 Extension)  
+> For the multi-person CCTV server version, see **[v2.0 README](v2.0/README.md)**. For the ESP32 hardware hub, see **[ESP32 README](esp32_relay_app/README.md)**.
 
 ---
 

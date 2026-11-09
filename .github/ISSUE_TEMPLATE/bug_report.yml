@@ -1,0 +1,35 @@
+name: Bug Report
+description: Create a report to help us fix a bug or issue
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue in AttentionTrackerOSS!
+  - type: input
+    id: version
+    attributes:
+      label: Which component is affected?
+      description: e.g., v1.0 Browser, v1.0 Extension, v2.0 Server, ESP32 Relay App
+      placeholder: "e.g., v1.0 Browser / v2.0 Server / ESP32"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Tell us what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps to reproduce the behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment & Hardware
+      description: OS, Python/Node versions, GPU/Camera model, browser version.

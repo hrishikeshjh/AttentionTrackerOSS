@@ -1,7 +1,9 @@
-# CognEn v2.0 — Multi-Person CCTV Room Analyzer
+# AttentionTrackerOSS v2.0 — Multi-Person CCTV Room Analyzer
 
-> **Server-based, multi-person cognitive engagement analysis for classrooms**
-> For the single-user browser version, see **[v1.0 README](../v1.0/README.md)**.
+> **Lead Developer & System Architect:** **Hrishikesh Jha** ([@hrishikeshjh](https://github.com/hrishikeshjh) · `hrishikeshjhapersonal@gmail.com`)  
+> **Repository:** [AttentionTrackerOSS](https://github.com/hrishikeshjh/AttentionTrackerOSS)  
+> **Subsystem:** Server-based, multi-person cognitive engagement analysis for classrooms & auditoriums  
+> For the single-user browser version, see **[v1.0 README](../v1.0/README.md)**. For the ESP32 hardware hub, see **[ESP32 README](../esp32_relay_app/README.md)**.
 
 > **Status (honest).** v2.0 is implemented and unit-tested (light tier 268 pass / 43 skip; heavy tier 338 pass; `ruff` clean) but it has **never been run on real classroom/CCTV footage, a real RTSP stream or a GPU, and no model has been trained or evaluated on real data**. Every accuracy, latency and FPS figure here is a **target** until measured on dataset D1 / pilot set P1. The served model, `behavior_classifier_v3`, was trained and tested on the project's own hand-written synthetic generator, so its 1.000 scores are **circular** (see [`evaluation/reports/behavior_classifier_v3_synthetic_note.md`](evaluation/reports/behavior_classifier_v3_synthetic_note.md)).
 >
