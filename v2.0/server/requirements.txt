@@ -55,4 +55,4 @@ scikit-learn==1.7.2         # metrics helpers
 onnx==1.22.0                # ONNX model verification
 
 # Testing
-pytest==9.0.3
+pytest==9.2.0
