@@ -85,6 +85,15 @@ HAND_PROXIMITY_NORM    = 0.20   # wrist-to-object distance threshold, as a fract
                                 # person box (v1.0 legacy threshold); used by the pose-wrist
                                 # method (features/hand_proximity.py)
 
+# ByteTrack multi-person tracking parameters (parameters.md §4)
+BYTE_TRACK_THRESH       = float(os.getenv("COGNEN_TRACK_THRESH", "0.45"))
+BYTE_TRACK_BUFFER       = int(os.getenv("COGNEN_TRACK_BUFFER", "45"))
+BYTE_MATCH_THRESH       = float(os.getenv("COGNEN_MATCH_THRESH", "0.80"))
+BYTE_MIN_CONF           = float(os.getenv("COGNEN_MIN_CONF", "0.10"))
+
+# Model confidence calibration temperature (parameters.md §7.3)
+BEHAVIOR_TEMPERATURE   = float(os.getenv("COGNEN_TEMPERATURE", "1.0"))
+
 # Source of the per-person hand/object proximity label:
 #   "pose"  (default) -- YOLOv8-pose wrists + the person's object boxes
 #           (features/hand_proximity.py). Thresholds unvalidated on CCTV.

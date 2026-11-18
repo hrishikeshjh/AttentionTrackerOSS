@@ -38,9 +38,21 @@ class ByteTrackWrapper:
     Falls back to a stub if boxmot is not installed (or its API is incompatible).
     """
 
-    def __init__(self, frame_rate: int = 15):
+    def __init__(
+        self,
+        frame_rate: int = 15,
+        track_thresh: float = 0.45,
+        track_buffer: int = 45,
+        match_thresh: float = 0.80,
+        min_conf: float = 0.10,
+    ):
         self._tracker = None
         self._available = False
+        self.track_thresh = track_thresh
+        self.track_buffer = track_buffer
+        self.match_thresh = match_thresh
+        self.min_conf = min_conf
+        self.frame_rate = frame_rate
         try:
             from boxmot import ByteTrack
         except ImportError as exc:
@@ -48,10 +60,10 @@ class ByteTrackWrapper:
             return
         try:
             self._tracker = ByteTrack(
-                min_conf=0.1,
-                track_thresh=0.25,
-                match_thresh=0.8,
-                track_buffer=30,
+                min_conf=min_conf,
+                track_thresh=track_thresh,
+                match_thresh=match_thresh,
+                track_buffer=track_buffer,
                 frame_rate=frame_rate,
             )
             self._available = True

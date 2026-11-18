@@ -187,17 +187,20 @@ def looking_down(pitch_deg: float, gaze_y: float) -> bool:
 
 
 class BehaviorClassifier:
-    def __init__(self, model_path: Path | None = None, session=None):
+    def __init__(self, model_path: Path | None = None, session=None, temperature: float = 1.0):
         """
-        model_path: ONNX model; loaded through the shared load_onnx_session
-                    cache. Ignored when *session* is given.
-        session:    an existing InferenceSession-like object (``run``) to
-                    share between classifiers.
+        model_path:  ONNX model; loaded through the shared load_onnx_session
+                     cache. Ignored when *session* is given.
+        session:     an existing InferenceSession-like object (``run``) to
+                     share between classifiers.
+        temperature: scalar > 0 for post-hoc probability calibration
+                     (parameters.md §7.3). Default 1.0 = standard softmax.
         """
         self._buffer: deque[list[float]] = deque(maxlen=WINDOW_SIZE)
         self._no_face: deque[bool] = deque(maxlen=WINDOW_SIZE)
         self._session = session if session is not None else load_onnx_session(model_path)
         self._model_dim = _session_feature_dim(self._session) if self._session is not None else FEATURE_DIM
+        self._temperature = max(float(temperature), 1e-4)
         self._onnx_error_logged = False
         self._last = BehaviorResult("distracted", 45, 0.0, "rule_based")
 
@@ -306,7 +309,8 @@ class BehaviorClassifier:
         inp = np.ascontiguousarray(win.T[np.newaxis, :, :])                          # (1, F, W)
         try:
             logits = self._session.run(None, {"input": inp})[0][0]   # (6,)
-            probs  = _softmax(logits)
+            scaled_logits = logits / self._temperature
+            probs  = _softmax(scaled_logits)
             probs  = self._context_gate(probs, frame)
             idx    = int(np.argmax(probs))
             return self._make(BEHAVIOR_LABELS[idx], float(probs[idx]), source="temporal")

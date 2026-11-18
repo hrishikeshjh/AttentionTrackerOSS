@@ -386,15 +386,21 @@ def train(args: argparse.Namespace) -> dict:
     logger.info("Class weights (inverse frequency, present classes): %s",
                 np.round(class_weights.cpu().numpy(), 3).tolist())
     use_penalty   = getattr(args, "penalty_loss", False)
+    weight_decay  = getattr(args, "weight_decay", 1e-4)
+    label_smoothing = getattr(args, "label_smoothing", 0.05)
+    eta_min       = getattr(args, "eta_min", args.lr * 0.01)
+    clip_grad     = getattr(args, "clip_grad", 1.0)
+    grad_accum_steps = max(1, getattr(args, "grad_accum_steps", 1))
+
     criterion: torch.nn.CrossEntropyLoss | None
     if use_penalty:
-        logger.info("Using ConfusionPenaltyLoss (training/penalty_matrix.py)")
+        logger.info("Using ConfusionPenaltyLoss (training/penalty_matrix.py) with label_smoothing=%.3f", label_smoothing)
         criterion = None   # loss computed inline
     else:
-        criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
-    optimizer     = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+    optimizer     = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=weight_decay)
     scheduler     = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
+        optimizer, T_max=args.epochs, eta_min=eta_min
     )
 
     best_f1       = -1.0
@@ -408,23 +414,32 @@ def train(args: argparse.Namespace) -> dict:
         # ── Train ──
         model.train()
         train_loss, train_correct, train_n = 0.0, 0, 0
+        n_batches = int(np.ceil(len(X_tr) / args.batch))
+        optimizer.zero_grad()
 
-        for Xb, yb in _iter_batches(X_tr, y_tr, args.batch, rng=batch_rng):
+        for batch_idx, (Xb, yb) in enumerate(_iter_batches(X_tr, y_tr, args.batch, rng=batch_rng)):
             # Shape: (B, W, F) → (B, F, W)
             Xt = torch.from_numpy(Xb).float().permute(0, 2, 1).to(device)
             yt = torch.from_numpy(yb).long().to(device)
 
-            optimizer.zero_grad()
             logits = model(Xt)
             if criterion is None:   # use_penalty
-                loss = ConfusionPenaltyLoss.compute(logits, yt, class_weights)
+                loss = ConfusionPenaltyLoss.compute(logits, yt, class_weights, label_smoothing=label_smoothing)
             else:
                 loss = criterion(logits, yt)
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
 
-            train_loss    += loss.item() * len(yb)
+            if grad_accum_steps > 1:
+                loss = loss / grad_accum_steps
+
+            loss.backward()
+
+            if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == n_batches:
+                nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                optimizer.step()
+                optimizer.zero_grad()
+
+            effective_loss = loss.item() * grad_accum_steps if grad_accum_steps > 1 else loss.item()
+            train_loss    += effective_loss * len(yb)
             train_correct += (logits.argmax(1) == yt).sum().item()
             train_n       += len(yb)
 
@@ -473,6 +488,15 @@ def train(args: argparse.Namespace) -> dict:
                 "seed":             seed,
                 "split":            split_info,
                 "n_params":         n_params,
+                "hyperparameters": {
+                    "lr": args.lr,
+                    "weight_decay": weight_decay,
+                    "label_smoothing": label_smoothing,
+                    "clip_grad": clip_grad,
+                    "eta_min": eta_min,
+                    "grad_accum_steps": grad_accum_steps,
+                    "penalty_loss": use_penalty,
+                },
             }, output_path)
             logger.info("  ✓ Saved best checkpoint (val_macroF1=%.4f)", best_f1)
         else:
@@ -509,6 +533,17 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--val_ratio", type=float, default=0.15)
     p.add_argument("--max_clips_per_dataset", type=int, default=None,
                    help="Cap clips/images per dataset (for quick debug runs)")
+    # Optimization hyperparameters (parameters.md)
+    p.add_argument("--weight-decay", dest="weight_decay", type=float, default=1e-4,
+                   help="L2 regularization weight decay (AdamW)")
+    p.add_argument("--label-smoothing", dest="label_smoothing", type=float, default=0.05,
+                   help="Label smoothing factor (0.0 to 0.10)")
+    p.add_argument("--eta-min", dest="eta_min", type=float, default=1e-5,
+                   help="Minimum learning rate for CosineAnnealingLR")
+    p.add_argument("--clip-grad", dest="clip_grad", type=float, default=1.0,
+                   help="Gradient norm clipping ceiling")
+    p.add_argument("--grad-accum-steps", dest="grad_accum_steps", type=int, default=1,
+                   help="Gradient accumulation steps for effective batch size")
     # Realistic synthetic data options
     p.add_argument("--realistic", action="store_true",
                    help="Use RealisticSyntheticDataset (class-conditional AR(1) windows)")

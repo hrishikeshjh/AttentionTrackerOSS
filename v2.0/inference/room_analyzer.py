@@ -48,6 +48,11 @@ from inference.contradiction_detector import ContradictionDetector
 from input.frame_source import FrameSource, RTSPSource
 from server.config import (
     BEHAVIOR_CLASSIFIER_MODEL,
+    BEHAVIOR_TEMPERATURE,
+    BYTE_MATCH_THRESH,
+    BYTE_MIN_CONF,
+    BYTE_TRACK_BUFFER,
+    BYTE_TRACK_THRESH,
     HAND_PROXIMITY_NORM,
     HAND_PROXIMITY_SOURCE,
     INPUT_HEIGHT,
@@ -156,7 +161,13 @@ class RoomAnalyzer:
 
         # Tracking
         if tracker is None:
-            tracker = ByteTrackWrapper(frame_rate=TARGET_FPS)
+            tracker = ByteTrackWrapper(
+                frame_rate=TARGET_FPS,
+                track_thresh=BYTE_TRACK_THRESH,
+                track_buffer=BYTE_TRACK_BUFFER,
+                match_thresh=BYTE_MATCH_THRESH,
+                min_conf=BYTE_MIN_CONF,
+            )
         if seat_mapper is None:
             from tracking.seat_mapper import SeatMapper
             seat_mapper = SeatMapper(seat_map)
@@ -173,7 +184,7 @@ class RoomAnalyzer:
         self._person_states: dict[int, PersonState] = {}
 
     def _new_person_state(self) -> PersonState:
-        return PersonState(behavior_clf=BehaviorClassifier(session=self._behavior_session))
+        return PersonState(behavior_clf=BehaviorClassifier(session=self._behavior_session, temperature=BEHAVIOR_TEMPERATURE))
 
     # ── Public ───────────────────────────────────────────────────────────────
 
