@@ -29,17 +29,17 @@ python-dotenv==1.2.2
 
 # Use opencv-python (not headless) so macOS/Windows permission dialogs work.
 # On headless servers you can swap to opencv-python-headless==4.13.0.92 instead.
-opencv-python==4.13.0.92
-ultralytics==8.4.146        # YOLOv8 (person, object, pose); 8.2.x predates torch>=2.6 (weights_only torch.load default)
-torch==2.13.0
-torchvision==0.28.0         # matches torch 2.13
-numpy==2.4.6
+opencv-python==5.0.0.93
+ultralytics==8.4.208        # YOLOv8 (person, object, pose); 8.2.x predates torch>=2.6 (weights_only torch.load default)
+torch==2.15.0
+torchvision==0.29.2         # matches torch 2.13
+numpy==2.5.4
 # ONNX Runtime — CPU build works on all platforms including Apple Silicon.
 # For NVIDIA GPU inference on Linux/Windows, replace with:
 #   pip install onnxruntime-gpu==1.24.4
-onnxruntime==1.24.4
-Pillow==12.3.0
-shapely==2.1.2              # polygon IoU for seat zones
+onnxruntime==1.31.1
+Pillow==13.0.0
+shapely==2.2.0              # polygon IoU for seat zones
 
 # ByteTrack via boxmot (tracking/byte_tracker.py). 16.x exports ByteTrack at
 # the package root (10.x did not, so the stub tracker was always used);
@@ -50,9 +50,9 @@ boxmot==16.0.11
 # mediapipe 0.10.31: FaceLandmarker Tasks API (perception/face_landmarks.py);
 # no numpy<2 cap and, unlike 0.10.32+, no opencv-contrib-python dependency
 # (which would install a second, conflicting cv2 next to opencv-python).
-mediapipe==0.10.31
-scikit-learn==1.7.2         # metrics helpers
-onnx==1.22.0                # ONNX model verification
+mediapipe==1.2.2
+scikit-learn==1.9.1         # metrics helpers
+onnx==1.23.2                # ONNX model verification
 
 # Testing
 pytest==9.0.3
